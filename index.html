@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pitney Bowes Shipping360 — Carrier Tutorials</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="idx-wrap">
+  <div class="idx-head">
+    <h1>Pitney Bowes Shipping360 — Developer Tutorials</h1>
+    <p>A multi-carrier shipping platform: one set of endpoints, many carriers.</p>
+    <p>Start with <strong>Basics</strong> for the common workflow, then open a carrier for its codes and account setup.</p>
+    <div class="idx-badges">
+      <span class="badge green">Verified against live docs · 2026-09-03</span>
+      <span class="badge">API portal v1.0.52</span>
+      <span class="badge">Shipping API V2</span>
+    </div>
+  </div>
+
+  <div class="section-label">Start here</div>
+  <div class="card-grid">
+    <a class="card feature" href="tutorials/00-basics.html">
+      <div class="emoji">📦</div>
+      <h3>Shipping360 Basics</h3>
+      <p>Auth, headers, address verify, rating, label creation, customs, returns, cancel, and manifest — the shared foundation every carrier uses.</p>
+      <div class="tags"><span class="tag">OAuth</span><span class="tag">Create Shipment V2</span><span class="tag">Metadata</span></div>
+    </a>
+  </div>
+
+  <div class="section-label">US carriers</div>
+  <div class="card-grid">
+    <a class="card" href="tutorials/usps.html">
+      <div class="emoji">📮</div>
+      <h3>USPS</h3>
+      <p>United States Postal Service. PB-discounted single-payer. Domestic + international, QR labels, Scan-Based returns.</p>
+      <div class="tags"><span class="tag">carrier: USPS</span><span class="tag">PB-discounted</span></div>
+    </a>
+    <a class="card" href="tutorials/ups.html">
+      <div class="emoji">🟤</div>
+      <h3>UPS</h3>
+      <p>Domestic + international parcels. Own account or PB-rated (single-payer) on the Standalone Free plan.</p>
+      <div class="tags"><span class="tag">carrier: UPS</span><span class="tag">own or PB-rated</span></div>
+    </a>
+    <a class="card" href="tutorials/fedex.html">
+      <div class="emoji">🟣</div>
+      <h3>FedEx</h3>
+      <p>FedEx Express. Own account or FedEx PB Rates. ETD, documents-only, unified returns.</p>
+      <div class="tags"><span class="tag">carrier: FEDEX</span><span class="tag">own or PB-rated</span></div>
+    </a>
+  </div>
+
+  <div class="section-label">Canada carriers</div>
+  <div class="card-grid">
+    <a class="card" href="tutorials/canadapost.html">
+      <div class="emoji">🍁</div>
+      <h3>Canada Post</h3>
+      <p>Canada's national carrier (CPC). Parcels services, CA→US cross-border, PITNETWORKS account type.</p>
+      <div class="tags"><span class="tag">carrier: CPC</span><span class="tag">own account</span><span class="tag">CA infra</span></div>
+    </a>
+    <a class="card" href="tutorials/purolator.html">
+      <div class="emoji">🐾</div>
+      <h3>Purolator</h3>
+      <p>Canadian courier: domestic, CA↔US, international. Bring your own account + E-Ship credentials.</p>
+      <div class="tags"><span class="tag">carrier: PUROLATOR</span><span class="tag">own account</span><span class="tag">CA infra</span></div>
+    </a>
+    <a class="card" href="tutorials/canpar.html">
+      <div class="emoji">📦</div>
+      <h3>Canpar</h3>
+      <p>Canadian small-parcel (TFI). Bring your own account; live-rated against your negotiated card.</p>
+      <div class="tags"><span class="tag">carrier: CANPAR</span><span class="tag">own account</span><span class="tag">CA infra</span></div>
+    </a>
+  </div>
+
+  <div class="section-label">International & last-mile</div>
+  <div class="card-grid">
+    <a class="card" href="tutorials/dhlexpress.html">
+      <div class="emoji">🌐</div>
+      <h3>DHL Express</h3>
+      <p>Global time-definite express. Bring your own DHL Express account (MyDHL API credentials).</p>
+      <div class="tags"><span class="tag">carrier: DHLEXP</span><span class="tag">own account</span></div>
+    </a>
+    <a class="card" href="tutorials/uniuni.html">
+      <div class="emoji">🚚</div>
+      <h3>UniUni</h3>
+      <p>Last-mile e-commerce (US + Canada). Newest carrier (Aug 2026); likely No-Rate, own account.</p>
+      <div class="tags"><span class="tag">carrier: UNIUNI</span><span class="tag">own account</span><span class="tag">new</span></div>
+    </a>
+  </div>
+
+  <div class="section-label">Resources</div>
+  <div class="card-grid">
+    <a class="card feature" href="tutorials/resources.html">
+      <div class="emoji">🧑‍💻</div>
+      <h3>Code Samples &amp; Postman</h3>
+      <p>Runnable Go and TypeScript clients (token → verify → rate → label → cancel), plus Postman collection setup, an auto-token script, and cURL smoke tests.</p>
+      <div class="tags"><span class="tag">Go</span><span class="tag">TypeScript</span><span class="tag">Postman</span><span class="tag">cURL</span></div>
+    </a>
+  </div>
+
+  <div class="section-label" style="margin-top:40px;">About</div>
+  <p style="color:var(--muted);font-size:14px;max-width:760px;">
+    These tutorials were verified against the live Pitney Bowes docs at
+    <a href="https://docs.shipping360.pitneybowes.com" target="_blank" rel="noopener">docs.shipping360.pitneybowes.com</a>
+    (API portal release v1.0.52, Aug 27 2026). Shipping360 deliberately does not publish per-carrier service/parcel/special-service codes — always fetch them at runtime via the metadata APIs (see Basics → Carrier Metadata). Confirm final values against the official reference and Carrier Catalog before production.
+  </p>
+</div>
+</body>
+</html>

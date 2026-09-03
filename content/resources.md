@@ -1,0 +1,562 @@
+# Resources — Code Samples (Go, TypeScript) & Postman
+
+Runnable starting points for Shipping360. The Go and TypeScript samples below implement the same universal workflow described in [Basics](00-basics.html): **token → verify address → rate → create label → cancel**. The Postman section gets you clicking calls in minutes.
+
+> **Verified against the live docs on 2026-09-03** (API portal v1.0.52). These samples use the raw REST API so they work without any SDK; the [Official SDKs](#official-sdks) section shows the shorter SDK path. Service codes (`PM`, `GND`, …) are illustrative — fetch real codes at runtime (see [Basics → Carrier Metadata](00-basics.html)).
+
+---
+
+## Table of Contents
+
+1. [Before You Start](#before-you-start)
+2. [Go — Full Client](#go--full-client)
+3. [Go — Using the Client](#go--using-the-client)
+4. [TypeScript — Full Client](#typescript--full-client)
+5. [TypeScript — Using the Client](#typescript--using-the-client)
+6. [Postman](#postman)
+7. [Official SDKs](#official-sdks)
+8. [Further Reading](#further-reading)
+
+---
+
+## Before You Start
+
+You need, from the [Developer Portal](https://sendpro360.pitneybowes.com/developer-signup) → Shipping API → API Keys:
+
+- `PB_CLIENT_ID`
+- `PB_CLIENT_SECRET`
+
+Set the two base hosts (US sandbox shown; see [Basics → Environment](00-basics.html) for Canada/production):
+
+```bash
+export PB_AUTH_URL="https://api-sandbox.sendpro360.pitneybowes.com/auth"
+export PB_SHIPPING_URL="https://api-sandbox.sendpro360.pitneybowes.com/shipping"
+export PB_CLIENT_ID="your_client_id"
+export PB_CLIENT_SECRET="your_client_secret"
+```
+
+> **Never commit credentials.** Keep them in environment variables or a gitignored `.env`. Both samples read from the environment.
+
+The token comes from **Basic Auth** against `/auth/api/v1/token` and lasts **4 hours** — cache it, don't fetch per call.
+
+---
+
+## Go — Full Client
+
+A self-contained client (standard library only) covering auth caching, address verify, rate, create shipment, and cancel. Save as `shipping360.go`.
+
+```go
+package shipping360
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+)
+
+type Client struct {
+	AuthURL, ShippingURL   string
+	ClientID, ClientSecret string
+	token                  string
+	tokenExpiry            time.Time
+	HTTP                   *http.Client
+}
+
+func New(authURL, shippingURL, id, secret string) *Client {
+	return &Client{
+		AuthURL: authURL, ShippingURL: shippingURL,
+		ClientID: id, ClientSecret: secret,
+		HTTP: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// ensureToken fetches a Bearer token via Basic Auth and caches it (~4h).
+func (c *Client) ensureToken() error {
+	if c.token != "" && time.Now().Before(c.tokenExpiry.Add(-5*time.Minute)) {
+		return nil
+	}
+	req, _ := http.NewRequest("POST", c.AuthURL+"/api/v1/token", nil)
+	req.SetBasicAuth(c.ClientID, c.ClientSecret)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("token failed: %d", resp.StatusCode)
+	}
+	var t struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
+		return err
+	}
+	c.token = t.AccessToken
+	c.tokenExpiry = time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
+	return nil
+}
+
+// call POSTs JSON to a /shipping path and decodes the response.
+func (c *Client) call(method, path string, body, out any) error {
+	if err := c.ensureToken(); err != nil {
+		return err
+	}
+	var buf *bytes.Buffer
+	if body != nil {
+		b, _ := json.Marshal(body)
+		buf = bytes.NewBuffer(b)
+	} else {
+		buf = bytes.NewBuffer(nil)
+	}
+	req, _ := http.NewRequest(method, c.ShippingURL+path, buf)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("%s %s failed: %d", method, path, resp.StatusCode)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+type Address struct {
+	Name          string `json:"name,omitempty"`
+	Company       string `json:"company,omitempty"`
+	AddressLine1  string `json:"addressLine1"`
+	CityTown      string `json:"cityTown"`
+	StateProvince string `json:"stateProvince,omitempty"`
+	PostalCode    string `json:"postalCode"`
+	CountryCode   string `json:"countryCode"`
+	Phone         string `json:"phone,omitempty"`
+	Status        string `json:"status,omitempty"`
+}
+
+type Parcel struct {
+	Length, Width, Height float64 `json:"length,omitempty"`
+	DimUnit               string  `json:"dimUnit,omitempty"`
+	Weight                float64 `json:"weight"`
+	WeightUnit            string  `json:"weightUnit"`
+	PackageValue          float64 `json:"packageValue,omitempty"`
+}
+
+type ByCarrier struct {
+	Carrier          string `json:"carrier,omitempty"`
+	Service          string `json:"service,omitempty"`
+	CarrierAccountID string `json:"carrierAccountId,omitempty"`
+}
+
+func (c *Client) VerifyAddress(a Address) (*Address, error) {
+	var out Address
+	return &out, c.call("POST", "/api/v1/address/verify", a, &out)
+}
+
+type RateRequest struct {
+	FromAddress Address   `json:"fromAddress"`
+	ToAddress   Address   `json:"toAddress"`
+	Parcel      Parcel    `json:"parcel"`
+	ParcelType  string    `json:"parcelType"`
+	RateShopBy  string    `json:"rateShopBy"`
+	ByCarrier   ByCarrier `json:"byCarrier,omitempty"`
+}
+
+type RateResponse struct {
+	Rate []struct {
+		Carrier            string  `json:"carrier"`
+		CarrierAccount     string  `json:"carrierAccount"`
+		ServiceID          string  `json:"serviceId"`
+		TotalCarrierCharge float64 `json:"totalCarrierCharge"`
+	} `json:"rate"`
+}
+
+func (c *Client) Rate(r RateRequest) (*RateResponse, error) {
+	var out RateResponse
+	return &out, c.call("POST", "/api/v2/rates", r, &out)
+}
+
+type ShipmentRequest struct {
+	FromAddress Address   `json:"fromAddress"`
+	ToAddress   Address   `json:"toAddress"`
+	Parcel      Parcel    `json:"parcel"`
+	ParcelType  string    `json:"parcelType"`
+	RateShopBy  string    `json:"rateShopBy"`
+	ByCarrier   ByCarrier `json:"byCarrier"`
+	LabelSize   string    `json:"labelSize"`
+	LabelType   string    `json:"labelType"`
+	LabelFormat string    `json:"labelFormat"`
+	ContentType string    `json:"contentType"`
+}
+
+type ShipmentResponse struct {
+	ShipmentID           string `json:"shipmentId"`
+	ParcelTrackingNumber string `json:"parcelTrackingNumber"`
+	CarrierAccountID     string `json:"carrierAccountId"`
+	LabelLayout          []struct {
+		Contents   string `json:"contents"`
+		FileFormat string `json:"fileFormat"`
+	} `json:"labelLayout"`
+}
+
+func (c *Client) CreateShipment(s ShipmentRequest) (*ShipmentResponse, error) {
+	var out ShipmentResponse
+	return &out, c.call("POST", "/api/v2/shipments", s, &out)
+}
+
+func (c *Client) Cancel(shipmentID string) error {
+	return c.call("POST", "/api/v2/shipments/cancel",
+		map[string]string{"shipmentId": shipmentID}, nil)
+}
+```
+
+---
+
+## Go — Using the Client
+
+`main.go` — the full flow end to end:
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+
+	"yourmodule/shipping360"
+)
+
+func main() {
+	c := shipping360.New(
+		os.Getenv("PB_AUTH_URL"),
+		os.Getenv("PB_SHIPPING_URL"),
+		os.Getenv("PB_CLIENT_ID"),
+		os.Getenv("PB_CLIENT_SECRET"),
+	)
+
+	from := shipping360.Address{
+		Name: "Warehouse", AddressLine1: "1001 Bridgeport Ave",
+		CityTown: "Shelton", StateProvince: "CT", PostalCode: "06484", CountryCode: "US", Phone: "2035551212",
+	}
+	to := shipping360.Address{
+		Name: "Jane Customer", AddressLine1: "123 Main St",
+		CityTown: "Los Angeles", StateProvince: "CA", PostalCode: "90001", CountryCode: "US", Phone: "2135551212",
+	}
+	parcel := shipping360.Parcel{Weight: 2.5, WeightUnit: "LB", Length: 10, Width: 7, Height: 4, DimUnit: "IN"}
+
+	// 1. Verify the destination address.
+	if v, err := c.VerifyAddress(to); err != nil {
+		log.Fatal(err)
+	} else {
+		fmt.Printf("address status: %s\n", v.Status)
+	}
+
+	// 2. Rate.
+	rates, err := c.Rate(shipping360.RateRequest{
+		FromAddress: from, ToAddress: to, Parcel: parcel,
+		ParcelType: "PKG", RateShopBy: "carrier",
+		ByCarrier: shipping360.ByCarrier{Carrier: "USPS"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range rates.Rate {
+		fmt.Printf("  %s %s $%.2f\n", r.Carrier, r.ServiceID, r.TotalCarrierCharge)
+	}
+
+	// 3. Create the label.
+	ship, err := c.CreateShipment(shipping360.ShipmentRequest{
+		FromAddress: from, ToAddress: to, Parcel: parcel,
+		ParcelType: "PKG", RateShopBy: "carrier",
+		ByCarrier:   shipping360.ByCarrier{Carrier: "USPS", Service: "PM"},
+		LabelSize:   "DOC_4X6", LabelType: "SHIPPING_LABEL",
+		LabelFormat: "PDF", ContentType: "URL",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("shipmentId=%s tracking=%s\n", ship.ShipmentID, ship.ParcelTrackingNumber)
+	if len(ship.LabelLayout) > 0 {
+		fmt.Printf("label: %s\n", ship.LabelLayout[0].Contents)
+	}
+
+	// 4. (Optional) Cancel if created by mistake.
+	// _ = c.Cancel(ship.ShipmentID)
+}
+```
+
+Run it:
+
+```bash
+go mod init yourmodule && go mod tidy
+go run .
+```
+
+---
+
+## TypeScript — Full Client
+
+Node 18+ (built-in `fetch`), no dependencies. Save as `shipping360.ts`.
+
+```typescript
+export interface Address {
+  name?: string;
+  company?: string;
+  addressLine1: string;
+  cityTown: string;
+  stateProvince?: string;
+  postalCode: string;
+  countryCode: string;
+  phone?: string;
+  status?: string;
+}
+
+export interface Parcel {
+  length?: number;
+  width?: number;
+  height?: number;
+  dimUnit?: string;
+  weight: number;
+  weightUnit: string;
+  packageValue?: number;
+}
+
+export interface ByCarrier {
+  carrier?: string;
+  service?: string;
+  carrierAccountId?: string;
+}
+
+export class Shipping360 {
+  private token = "";
+  private tokenExpiry = 0;
+
+  constructor(
+    private authUrl: string,
+    private shippingUrl: string,
+    private clientId: string,
+    private clientSecret: string,
+  ) {}
+
+  // Fetch a Bearer token via Basic Auth and cache it (~4h).
+  private async ensureToken(): Promise<void> {
+    if (this.token && Date.now() < this.tokenExpiry - 5 * 60_000) return;
+    const basic = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString("base64");
+    const res = await fetch(`${this.authUrl}/api/v1/token`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/json" },
+    });
+    if (!res.ok) throw new Error(`token failed: ${res.status}`);
+    const t = (await res.json()) as { access_token: string; expires_in: number };
+    this.token = t.access_token;
+    this.tokenExpiry = Date.now() + t.expires_in * 1000;
+  }
+
+  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    await this.ensureToken();
+    const res = await fetch(`${this.shippingUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) throw new Error(`${method} ${path} failed: ${res.status}`);
+    return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+  }
+
+  verifyAddress(a: Address) {
+    return this.call<Address>("POST", "/api/v1/address/verify", a);
+  }
+
+  rate(req: {
+    fromAddress: Address;
+    toAddress: Address;
+    parcel: Parcel;
+    parcelType: string;
+    rateShopBy: string;
+    byCarrier?: ByCarrier;
+  }) {
+    return this.call<{
+      rate: Array<{ carrier: string; serviceId: string; totalCarrierCharge: number }>;
+    }>("POST", "/api/v2/rates", req);
+  }
+
+  createShipment(req: {
+    fromAddress: Address;
+    toAddress: Address;
+    parcel: Parcel;
+    parcelType: string;
+    rateShopBy: string;
+    byCarrier: ByCarrier;
+    labelSize: string;
+    labelType: string;
+    labelFormat: string;
+    contentType: string;
+  }) {
+    return this.call<{
+      shipmentId: string;
+      parcelTrackingNumber: string;
+      carrierAccountId: string;
+      labelLayout: Array<{ contents: string; fileFormat: string }>;
+    }>("POST", "/api/v2/shipments", req);
+  }
+
+  cancel(shipmentId: string) {
+    return this.call<void>("POST", "/api/v2/shipments/cancel", { shipmentId });
+  }
+}
+```
+
+---
+
+## TypeScript — Using the Client
+
+`main.ts` — the full flow:
+
+```typescript
+import { Shipping360, Address, Parcel } from "./shipping360.js";
+
+const c = new Shipping360(
+  process.env.PB_AUTH_URL!,
+  process.env.PB_SHIPPING_URL!,
+  process.env.PB_CLIENT_ID!,
+  process.env.PB_CLIENT_SECRET!,
+);
+
+const from: Address = {
+  name: "Warehouse", addressLine1: "1001 Bridgeport Ave",
+  cityTown: "Shelton", stateProvince: "CT", postalCode: "06484", countryCode: "US", phone: "2035551212",
+};
+const to: Address = {
+  name: "Jane Customer", addressLine1: "123 Main St",
+  cityTown: "Los Angeles", stateProvince: "CA", postalCode: "90001", countryCode: "US", phone: "2135551212",
+};
+const parcel: Parcel = { weight: 2.5, weightUnit: "LB", length: 10, width: 7, height: 4, dimUnit: "IN" };
+
+async function main() {
+  // 1. Verify address
+  const verified = await c.verifyAddress(to);
+  console.log("address status:", verified.status);
+
+  // 2. Rate
+  const rates = await c.rate({
+    fromAddress: from, toAddress: to, parcel,
+    parcelType: "PKG", rateShopBy: "carrier", byCarrier: { carrier: "USPS" },
+  });
+  rates.rate.forEach((r) => console.log(`  ${r.carrier} ${r.serviceId} $${r.totalCarrierCharge}`));
+
+  // 3. Create label
+  const ship = await c.createShipment({
+    fromAddress: from, toAddress: to, parcel,
+    parcelType: "PKG", rateShopBy: "carrier",
+    byCarrier: { carrier: "USPS", service: "PM" },
+    labelSize: "DOC_4X6", labelType: "SHIPPING_LABEL",
+    labelFormat: "PDF", contentType: "URL",
+  });
+  console.log("shipmentId:", ship.shipmentId, "tracking:", ship.parcelTrackingNumber);
+  console.log("label:", ship.labelLayout[0]?.contents);
+
+  // 4. Optional cancel
+  // await c.cancel(ship.shipmentId);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });
+```
+
+Run it:
+
+```bash
+npm init -y && npm i -D typescript tsx
+npx tsx main.ts
+```
+
+---
+
+## Postman
+
+Pitney Bowes publishes an official Postman collection — the fastest way to click through every call without writing code.
+
+### Import the collection
+
+1. Open the [Postman Collection page](https://docs.shipping360.pitneybowes.com/docs/resources/postman) and grab the collection (there is a separate collection for the **Canada region**).
+2. In Postman: **Import** → paste the collection URL or the downloaded JSON.
+
+### Create an environment
+
+Add a Postman **Environment** with these variables so requests are parameterized:
+
+| Variable | Sandbox value | Notes |
+|---|---|---|
+| `authUrl` | `https://api-sandbox.sendpro360.pitneybowes.com/auth` | Token host |
+| `shippingUrl` | `https://api-sandbox.sendpro360.pitneybowes.com/shipping` | Everything else |
+| `clientId` | *your Client ID* | From API Keys |
+| `clientSecret` | *your Secret* | Mark **secret** type |
+| `bearerToken` | *(leave blank)* | Filled by the script below |
+
+### Auto-fetch the token
+
+On the **Get Access Token** request, set Authorization = **Basic Auth** with username `{{clientId}}` / password `{{clientSecret}}`, then add this **Post-response** (Tests) script so the token is reused automatically:
+
+```javascript
+// Save the token into the environment for all later requests.
+const json = pm.response.json();
+pm.environment.set("bearerToken", json.access_token);
+console.log("token cached, expires_in:", json.expires_in);
+```
+
+On every other request, set Authorization = **Bearer Token** with the value `{{bearerToken}}`. Now you can run *Verify Address → Rate → Create Shipment → Cancel* in sequence, editing only the body.
+
+### Quick raw calls (cURL)
+
+If you just want to smoke-test without Postman:
+
+```bash
+# 1. Token (Basic Auth, no body)
+TOKEN=$(curl -s -X POST -u "$PB_CLIENT_ID:$PB_CLIENT_SECRET" \
+  "$PB_AUTH_URL/api/v1/token" -H 'Content-Type: application/json' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+# 2. Verify an address
+curl -s -X POST "$PB_SHIPPING_URL/api/v1/address/verify" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"addressLine1":"1001 Bridgeport AA","cityTown":"Shelton","countryCode":"US","postalCode":"06484"}'
+```
+
+---
+
+## Official SDKs
+
+For production, prefer an official SDK over the hand-rolled clients above — they wrap auth, retries, and typed models.
+
+| SDK | Install |
+|---|---|
+| Go | `go get` the module |
+| TypeScript / JavaScript | `npm` |
+| Java | Maven / Gradle |
+| .NET | NuGet |
+| Python | `pip` (Python 3.7+) |
+
+Get the exact package names and versions from the SDKs page below.
+
+---
+
+## Further Reading
+
+- SDKs and Client Libraries: https://docs.shipping360.pitneybowes.com/docs/overview/sdks
+- Postman Collection: https://docs.shipping360.pitneybowes.com/docs/resources/postman
+- Shipping API reference: https://docs.shipping360.pitneybowes.com/openapi/shipping
+- Error Codes: https://docs.shipping360.pitneybowes.com/docs/support/error-codes

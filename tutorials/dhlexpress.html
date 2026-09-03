@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DHL Express — Shipping360 Tutorial</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<button class="menu-toggle" id="menuToggle" aria-label="Toggle menu">☰ Contents</button>
+<div class="layout">
+  <nav class="sidebar" id="sidebar">
+    <a class="home" href="../index.html">← All tutorials</a>
+    <h2>On this page</h2>
+    <ol id="toc"></ol>
+  </nav>
+  <main class="content">
+    <header class="hero">
+      <div class="kicker">International</div>
+      <h1>DHL Express</h1>
+      <div class="badges">
+        <span class="badge green">Verified · 2026-09-03</span>
+        <span class="badge">API portal v1.0.52</span>
+      </div>
+    </header>
+    <div id="doc"></div>
+  </main>
+</div>
+<button class="topbtn" id="topbtn" aria-label="Back to top" title="Back to top">↑</button>
+<script type="text/markdown" id="source">
+# DHL Express on Shipping360
+
+> Read [Shipping360 Basics](00-basics.html) first — auth, headers, rating, label creation, cancel, and manifest are identical across carriers. This page covers only what is **DHL Express-specific**.
+
+DHL Express is a global courier for time-definite international express. In Shipping360 it is `carrierID: DHLEXP`: rate, create label, reprint, void, and track.
+
+---
+
+## Table of Contents
+
+1. [At a Glance](#at-a-glance)
+2. [Geography](#geography)
+3. [Service / Parcel / Special-Service Codes](#service--parcel--special-service-codes)
+4. [Label Formats & Sizes](#label-formats--sizes)
+5. [Connecting a DHL Express Account](#connecting-a-dhl-express-account)
+6. [Rate Cards / Own-Account Requirements](#rate-cards--own-account-requirements)
+7. [International Customs & ETD](#international-customs--etd)
+8. [Gotchas](#gotchas)
+9. [Further Reading](#further-reading)
+
+---
+
+## At a Glance
+
+| | |
+|---|---|
+| `carrier` / `carrierID` value | `DHLEXP` |
+| Best for | International express (time-definite) |
+| Rate model | **Bring your own DHL Express account** (negotiated tariffs) |
+| Account onboarding | Carrier Accounts API (`carrierID: "DHLEXP"`) |
+| Region | Global; country-pair dependent |
+
+---
+
+## Geography
+
+International express focus — global outbound/inbound, with capabilities that are country-pair dependent (PB exposes origin/destination via metadata).
+
+---
+
+## Service / Parcel / Special-Service Codes
+
+> **Not published by PB** — the DHL Express page shows "Metadata information not available." Retrieve at runtime via the metadata APIs. **Do not hard-code.** DHL's product families (Express Worldwide, Express 12:00 / 9:00, Economy Select) and value-added services (Insurance, GoGreen) come from DHL's own MyDHL reference data; the PB-mapped codes are account/country-driven.
+
+---
+
+## Label Formats & Sizes
+
+Not specified on the PB DHLEXP page. PB's Shipping/Print API governs document type/size generally; confirm PDF/ZPL and 4x6/A4 support via the [Print API](https://docs.shipping360.pitneybowes.com/openapi/shipping/print). Upstream MyDHL supports PDF labels fit-to-A4.
+
+---
+
+## Connecting a DHL Express Account
+
+Bring-your-own-account, via the Carrier Accounts API:
+
+```text
+POST {shippingUrl}/api/v1/carrierAccounts
+```
+
+```json
+{
+  "carrierID": "DHLEXP",
+  "accountNumber": "YOUR_DHL_ACCOUNT",
+  "description": "DHLEXP by API",
+  "carrierAccountType": "Shipping",
+  "provisioningType": "API",
+  "parameters": {
+    "username": "YOUR_DHL_API_USERNAME",
+    "password": "YOUR_DHL_API_PASSWORD"
+  }
+}
+```
+
+- Prerequisites: a DHL Express **customer account number** + **API security credentials** (username/password).
+- The response returns a `carrierAccountID` used in `byCarrier.carrierAccountId`.
+
+**Getting a DHL Express account + API access:**
+- Existing customers: log in to the [DHL Developer Portal](https://developer.dhl.com/) → "Get Access" for the MyDHL API.
+- New customers: request an account at [mydhl open account](https://mydhl.express.dhl/gb/en/ship/open-account.html); DHL sets it up, then request API access.
+- DHL API environments: test (`express.api.dhl.com/mydhlapi/test`, ~500 calls/day) and production (`/mydhlapi`), Basic Auth.
+
+---
+
+## Rate Cards / Own-Account Requirements
+
+Requires the **merchant's own DHL Express account** — rates returned are that account's negotiated tariffs. PB does not resell DHL Express; there is no PB-provided rate card. Billing/duties-payor (DDP/DDU/third-party) is handled at **shipment time** (carrierPayments in the Shipping API), not during carrier onboarding.
+
+---
+
+## International Customs & ETD
+
+- International non-document shipments require **customs/export-declaration data** (`customs` object — see Basics).
+- **ETD (Electronic Trade Documents):** supported via PB's [Upload ETD endpoint](https://docs.shipping360.pitneybowes.com/openapi/shipping/electronic-trade-document); confirm ETD is enabled for DHLEXP on your account.
+- Documents-only shipments: supported upstream in DHL (customs optional for non-declarable) but **not explicitly confirmed on the PB DHLEXP page** — verify.
+
+---
+
+## Gotchas
+
+- PB DHLEXP metadata (services/parcels/special/formats) is account/country-driven — fetch at runtime; don't hard-code.
+- International shipments need clean customs data.
+- Rating is indicative; final rate/transit may differ per DHL terms.
+- `carrierAccountId` must match the location resolved by `X-PB-LocationId`.
+
+---
+
+## Further Reading
+
+- DHL Express Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/dhlexpress
+- Carrier Accounts API: https://docs.shipping360.pitneybowes.com/openapi/carrieraccounts
+- DHL MyDHL API: https://developer.dhl.com/api-reference/dhl-express-mydhl-api
+
+</script>
+<script src="../assets/tutorial.js"></script>
+</body>
+</html>

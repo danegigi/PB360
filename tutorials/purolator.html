@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Purolator — Shipping360 Tutorial</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<button class="menu-toggle" id="menuToggle" aria-label="Toggle menu">☰ Contents</button>
+<div class="layout">
+  <nav class="sidebar" id="sidebar">
+    <a class="home" href="../index.html">← All tutorials</a>
+    <h2>On this page</h2>
+    <ol id="toc"></ol>
+  </nav>
+  <main class="content">
+    <header class="hero">
+      <div class="kicker">Canada Carrier</div>
+      <h1>Purolator</h1>
+      <div class="badges">
+        <span class="badge green">Verified · 2026-09-03</span>
+        <span class="badge">API portal v1.0.52</span>
+      </div>
+    </header>
+    <div id="doc"></div>
+  </main>
+</div>
+<button class="topbtn" id="topbtn" aria-label="Back to top" title="Back to top">↑</button>
+<script type="text/markdown" id="source">
+# Purolator on Shipping360
+
+> Read [Shipping360 Basics](00-basics.html) first — auth, headers, rating, label creation, cancel, and manifest are identical across carriers. This page covers only what is **Purolator-specific**. Purolator is a Canadian carrier — use the **Canada infrastructure** base URLs.
+
+Purolator is a Canadian courier for domestic, Canada↔US, and international parcels. Shipping360 supports rate, create label, reprint, void/cancel, tracking, and rate-shop. A separate carrier **Purolator Freight** (LTL) also exists (`carrierID: PUROLATORFREIGHT`).
+
+---
+
+## Table of Contents
+
+1. [At a Glance](#at-a-glance)
+2. [Geography](#geography)
+3. [Service / Parcel / Special-Service Codes](#service--parcel--special-service-codes)
+4. [Label Formats & Sizes](#label-formats--sizes)
+5. [Connecting a Purolator Account](#connecting-a-purolator-account)
+6. [Rate Cards / Own-Account Requirements](#rate-cards--own-account-requirements)
+7. [Purolator Freight (LTL)](#purolator-freight-ltl)
+8. [Gotchas](#gotchas)
+9. [Further Reading](#further-reading)
+
+---
+
+## At a Glance
+
+| | |
+|---|---|
+| `carrier` / `carrierID` value | `PUROLATOR` (freight: `PUROLATORFREIGHT`) |
+| Best for | Canada domestic, CA↔US, international parcels |
+| Rate model | **Bring your own Purolator account** (negotiated rates) |
+| Account onboarding | Carrier Accounts API or client portal |
+| Region | **Canada infrastructure** |
+
+---
+
+## Geography
+
+Ship within Canada, Canada↔US, and internationally (Purolator reaches 210+ countries/territories via its own network). PB confirms "domestic and international"; exact per-lane country lists are not published in PB360.
+
+---
+
+## Service / Parcel / Special-Service Codes
+
+> **Not published** — the Purolator overview page shows "Metadata information not available." Retrieve services, parcel types, and special services at runtime via the metadata APIs. **Do not hard-code.** Purolator's real services (Express, Express 9AM / 10:30AM / Evening, Ground, and US/International variants) exist per Purolator's service guide, but PB does not expose the mapped codes.
+
+Support for these is **uncertain in PB360** for courier and must be verified via metadata: hazmat/dangerous goods, specific special-service codes.
+
+---
+
+## Label Formats & Sizes
+
+Not enumerated for Purolator courier on the overview page ("Metadata information not available"). Confirm via the Print API / Carrier Catalog. **ZPL2** support is documented for **Purolator Freight** (pallet labels + Bill of Lading), but the courier page does not confirm ZPL2 — verify at runtime.
+
+---
+
+## Connecting a Purolator Account
+
+You bring your own Purolator account and credentials:
+
+```text
+POST {caShippingUrl}/api/v1/carrierAccounts
+```
+
+```json
+{
+  "carrierID": "PUROLATOR",
+  "accountNumber": "0001234",
+  "carrierAccountType": "Shipping",
+  "provisioningType": "API",
+  "parameters": {
+    "userID": "YOUR_PUROLATOR_USER_ID"
+  }
+}
+```
+
+- Prerequisites: your Purolator **Account Number** + **security credentials (User ID)**. PB notes Purolator can currently be onboarded "through the client portal for now."
+- The response returns a `carrierAccountID` used in `byCarrier.carrierAccountId`.
+
+**Getting a Purolator business account + credentials:**
+1. Open an account at [purolator.com](https://www.purolator.com/en) → Open an Account.
+2. Register for **E-Ship Web Services** developer credentials (a **Production Key** plus your account number + username/password) via the [Purolator Developer Portal](https://ship.purolator.com/developer).
+3. **Account numbers are 7+ digits, zero-padded** (e.g. `123` → `0000123`) — a common failure point.
+
+---
+
+## Rate Cards / Own-Account Requirements
+
+Rates are **account-specific** — Purolator returns rates tied to the merchant's negotiated Purolator account. PB360 rating requires the connected carrier account; there is no PB-managed rate card substitute for the merchant's Purolator contract.
+
+---
+
+## Purolator Freight (LTL)
+
+`carrierID: PUROLATORFREIGHT` is a separate LTL carrier: Canada-only, ZPL2 pallet labels + Bill of Lading, future-dated ≤10 days. It does **not** support rate shopping, returns, hazmat, manifest, user-initiated void, or customs documents. QR / barcode-only labels are not supported.
+
+---
+
+## Gotchas
+
+- PB publishes **no** Purolator courier metadata (services/parcels/special/formats/geography) — fetch at runtime.
+- Account number zero-padding to 7+ digits.
+- Hazmat: not supported for Freight; **unknown for courier** — verify.
+- "Onboard through client portal for now" suggests API self-onboarding may be gated.
+- `carrierAccountId` must match the location resolved by `X-PB-LocationId`.
+
+---
+
+## Further Reading
+
+- Purolator Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/purolator
+- Purolator Freight Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/purolatorfreight
+- Carrier Accounts API: https://docs.shipping360.pitneybowes.com/openapi/carrieraccounts
+- Purolator E-Ship Web Services: https://www.purolator.com/en/services/technology-solutions/e-ship-web-services
+
+</script>
+<script src="../assets/tutorial.js"></script>
+</body>
+</html>

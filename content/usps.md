@@ -1,0 +1,131 @@
+# USPS on Shipping360
+
+> Read [Shipping360 Basics](00-basics.html) first — auth, headers, rating, label creation, cancel, and manifest are identical across carriers. This page covers only what is **USPS-specific**.
+
+USPS is the United States Postal Service. In Shipping360, PB acts as a SendTech sending/receiving solution over USPS: labels (domestic + international), IMb labels, QR-code labels, stamps, tracking, Certified Mail / ERR, scheduled pickups, returns, and manifest.
+
+---
+
+## Table of Contents
+
+1. [At a Glance](#at-a-glance)
+2. [Geography](#geography)
+3. [Service Codes](#service-codes)
+4. [Parcel Types & Special Services](#parcel-types--special-services)
+5. [Label Formats & Sizes](#label-formats--sizes)
+6. [Connecting a USPS Account](#connecting-a-usps-account)
+7. [Rate Cards / Who Pays](#rate-cards--who-pays)
+8. [USPS Example: Domestic Label](#usps-example-domestic-label)
+9. [Gotchas](#gotchas)
+10. [Further Reading](#further-reading)
+
+---
+
+## At a Glance
+
+| | |
+|---|---|
+| `carrier` value | `USPS` |
+| Best for | Lightweight domestic parcels, PO boxes, residential, some international |
+| Rate model | **PB-discounted (single-payer)** — funded postage account |
+| Account onboarding | **Portal / PB-provisioned only** (not via the Carrier Accounts API) |
+| Region | US infrastructure |
+
+---
+
+## Geography
+
+- **Domestic:** US, insular areas, associated states, and military APO/FPO/DPO.
+- **International:** ~180 countries ([USPS country list](https://pe.usps.com/text/imm/immctry.htm)).
+
+---
+
+## Service Codes
+
+> **Codes are dynamic.** Query the live list with `GET /getservices?carrier=USPS`. The values below are the ones verifiable from PB doc examples — treat the runtime metadata call as authoritative and do not assume unlisted services.
+
+| Code (verified) | Name |
+|---|---|
+| `EM` | Priority Mail Express |
+| `UGA` / `GA` | USPS Ground Advantage |
+| `PM` | Priority Mail |
+| `FCM` | First-Class Mail |
+
+Other USPS services (Media Mail, Priority Mail International, First-Class Package International, etc.) exist but their exact codes must be pulled from metadata.
+
+---
+
+## Parcel Types & Special Services
+
+- **Parcel types (verified):** `PKG` (Package). IMb-eligible types also referenced: `LETTER`, `FLAT`, `IRRPKG`, `NMLETTER`. Full list via `GET /getparceltypes`.
+- **Special services:** `Ins` (Insurance), plus the object-based `deliveryConfirmation` (`SIGNATURE`, `ADULT_SIGNATURE`, …), `handling`, `insurance`, `returnOptions`. Full list via `GET /getspecialservices`.
+- IMb / First-Class Mail **letters and flats** support **no** special services.
+
+---
+
+## Label Formats & Sizes
+
+- **Sizes:** `DOC_8X11`, `DOC_4X8`, `DOC_4X6` (plus 4x3 for eligible package types).
+- **Formats:** `PDF`, `ZPL2`, `PNG`, `GIF`.
+- ZPL2 → `DOC_4X6` only; PDF → all sizes.
+- **QR-code labels:** `labelType: QR_CODE`, `labelFormat: GIF` — **USPS only**.
+- IMb labels: PDF/PNG/ZPL2, sizes 6x4 & 9x4, Base64 or URL.
+
+---
+
+## Connecting a USPS Account
+
+> **USPS carrier onboarding is not available from the API.** PB's docs state USPS onboarding from the API is not supported "as of now." USPS is provisioned on your PB SendPro360 account/location via the portal or PB support.
+
+1. Sign up for a PB Developer Account and generate Sandbox `Client ID` / `Secret` ([signup](https://sendpro360.pitneybowes.com/developer-signup)).
+2. Generate a Bearer token (see Basics).
+3. Ensure USPS is enabled on your PB account/location (portal / PB support).
+4. Reference it at shipment time with `byCarrier.carrier: "USPS"` (and `carrierAccountId` if you manage multiple).
+
+---
+
+## Rate Cards / Who Pays
+
+USPS in Shipping360 is a **PB-discounted, single-payer** model: PB provides discounted USPS rates and the postage account must be funded (labels fail on insufficient funds). Rate responses show `rateTypeId` values such as `CONTRACT_RATES`, `COMMERCIAL`, `RETAIL`, `ONE_RATE`.
+
+> The docs do not describe bringing your own separately-negotiated USPS rate card for USPS specifically — treat "own USPS rate card" as unverified and use PB's discounted rates.
+
+---
+
+## USPS Example: Domestic Label
+
+```json
+{
+  "fromAddress": { "name": "Warehouse", "company": "My Store", "addressLine1": "1001 Bridgeport Ave", "cityTown": "Shelton", "stateProvince": "CT", "postalCode": "06484", "countryCode": "US", "phone": "2035551212" },
+  "toAddress":   { "name": "Jane Customer", "addressLine1": "123 Main St", "cityTown": "Los Angeles", "stateProvince": "CA", "postalCode": "90001", "countryCode": "US", "phone": "2135551212" },
+  "parcel": { "weight": 2.5, "weightUnit": "LB", "length": 10, "width": 7, "height": 4, "dimUnit": "IN" },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": { "carrier": "USPS", "service": "PM" },
+  "labelSize": "DOC_4X6",
+  "labelType": "SHIPPING_LABEL",
+  "labelFormat": "PDF",
+  "contentType": "URL",
+  "references": { "reference1": "ORDER-10001" }
+}
+```
+
+POST to `{shippingUrl}/api/v2/shipments`.
+
+---
+
+## Gotchas
+
+- USPS API onboarding is unsupported — portal-only.
+- IMb / FCM letters and flats: no special services, non-refundable, no custom-message options.
+- **USPS Returns labels cannot be voided**; return-label URLs expire after **24h**.
+- Returns are Scan-Based: the account is charged only after induction (`Printed` → `Charged`).
+- Can deliver to PO boxes (set `isPOBox: true`); most non-USPS carriers cannot.
+
+---
+
+## Further Reading
+
+- USPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/usps
+- Get Services (USPS codes): https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/getservices
+- Create Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/createshipmentv2

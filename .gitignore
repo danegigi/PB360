@@ -1,0 +1,12 @@
+# OS / editor cruft
+.DS_Store
+*.swp
+*~
+
+# Local scratch / build artifacts
+*.log
+*.tmp
+__pycache__/
+
+# Local preview server pids
+*.pid

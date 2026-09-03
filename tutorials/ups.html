@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UPS — Shipping360 Tutorial</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<button class="menu-toggle" id="menuToggle" aria-label="Toggle menu">☰ Contents</button>
+<div class="layout">
+  <nav class="sidebar" id="sidebar">
+    <a class="home" href="../index.html">← All tutorials</a>
+    <h2>On this page</h2>
+    <ol id="toc"></ol>
+  </nav>
+  <main class="content">
+    <header class="hero">
+      <div class="kicker">US Carrier</div>
+      <h1>UPS</h1>
+      <div class="badges">
+        <span class="badge green">Verified · 2026-09-03</span>
+        <span class="badge">API portal v1.0.52</span>
+      </div>
+    </header>
+    <div id="doc"></div>
+  </main>
+</div>
+<button class="topbtn" id="topbtn" aria-label="Back to top" title="Back to top">↑</button>
+<script type="text/markdown" id="source">
+# UPS on Shipping360
+
+> Read [Shipping360 Basics](00-basics.html) first — auth, headers, rating, label creation, cancel, and manifest are identical across carriers. This page covers only what is **UPS-specific**.
+
+UPS is a global parcel carrier used for domestic parcels, business shipments, residential delivery, and international. Shipping360 supports rating, label create/reprint/void, tracking, multipiece, returns, alternate return address, documents-only shipments, pickups, and published-vs-discounted rate display.
+
+---
+
+## Table of Contents
+
+1. [At a Glance](#at-a-glance)
+2. [Geography](#geography)
+3. [Service & Special-Service Codes](#service--special-service-codes)
+4. [Label Formats & Sizes](#label-formats--sizes)
+5. [Connecting a UPS Account](#connecting-a-ups-account)
+6. [Rate Cards / Who Pays](#rate-cards--who-pays)
+7. [UPS Example: Domestic + Returns](#ups-example-domestic--returns)
+8. [Gotchas](#gotchas)
+9. [Further Reading](#further-reading)
+
+---
+
+## At a Glance
+
+| | |
+|---|---|
+| `carrier` value | `UPS` |
+| Best for | Domestic + international parcels, business & residential |
+| Rate model | **Bring your own account** OR **PB-rated (single-payer)** on Standalone Free plan |
+| Account onboarding | Carrier Accounts API (`carrierID: "UPS"`) or client portal |
+| Region | US + international (EU De Minimis support since Aug 2026) |
+
+---
+
+## Geography
+
+Domestic US and international. Optional `consigneeType` supports EU De Minimis customs clearance for EU-bound shipments (added Aug 2026). Exact per-country service availability comes from carrier metadata.
+
+---
+
+## Service & Special-Service Codes
+
+> **Not published statically.** The UPS overview page shows "Metadata information not available" and the Carrier Catalog renders empty. Query `GET /getservices?carrier=UPS`, `GET /getparceltypes`, `GET /getspecialservices` per origin/destination. **Do not hard-code UPS service codes** — real-world names (UPS Ground, 2nd Day Air, Next Day Air, Standard, Worldwide Saver/Expedited) exist, but the mapped codes are lane-dependent.
+
+Special-service concepts available (via the object model, carrier-specific values from metadata):
+- `deliveryConfirmation`: `SIGNATURE`, `ADULT_SIGNATURE` (UPS supports these two).
+- `handling`: `HOLD_FOR_PICKUP`, `SATURDAY_DELIVERY`, `PREMIUM_CARE`, `DIRECT_DELIVERY_ONLY`, `ADDITIONAL_HANDLING` (UPS supports all).
+- `insurance`: `INSURANCE`.
+- `returnOptions`: required for UPS returns (or `serviceId: PRL`).
+
+---
+
+## Label Formats & Sizes
+
+- **Formats:** `PDF`, `ZPL2`, `PNG`, `GIF` (contentType `URL` for PDF/GIF, `BASE64` for ZPL2/PNG/GIF).
+- **PDF doc sizes (verified):** `8x11` and `4x6_75`. **ZPL2 sizes:** `Doc_4x6` and `Doc_8.5x11`.
+
+---
+
+## Connecting a UPS Account
+
+Bring-your-own-account, via the Carrier Accounts API:
+
+```text
+POST {shippingUrl}/api/v1/carrierAccounts
+```
+
+```json
+{
+  "carrierID": "UPS",
+  "accountNumber": "YOUR_UPS_ACCOUNT",
+  "description": "UPS by API",
+  "carrierAccountType": "Shipping",
+  "provisioningType": "API",
+  "parameters": {
+    "invoiceNumber": "…",
+    "invoiceDate": "YYYYMMDD",
+    "invoiceControlID": "…",
+    "invoiceAmount": "…",
+    "accountAddress": { "addressLine1": "…", "cityTown": "…", "stateProvince": "…", "postalCode": "…", "countryCode": "US" }
+  }
+}
+```
+
+- Prerequisites: your UPS **account number** and UPS security credentials; UPS may require invoice-verification details on onboarding.
+- Get a UPS account at [ups.com](https://www.ups.com/) → Open an Account; developer/API access via the UPS Developer Portal.
+- The response returns a `carrierAccountId` used in `byCarrier.carrierAccountId`.
+
+---
+
+## Rate Cards / Who Pays
+
+- **Bring your own UPS account** → your UPS-negotiated rates apply; UPS bills you.
+- **PB-rated / discounted UPS (single-payer)** → since **Feb 2026 (v1.0.43)**, Standalone Free plan users can use UPS as a PB-rated carrier with PB's discounted rates and end-of-day settlement. **Gated:** enable via the Carrier screen "Single Payer" feature, which requires PB Customer Support based on eligibility.
+- `publishedTotalCarrierCharge` in the rate/label response shows the published rate vs the discounted rate applied.
+
+---
+
+## UPS Example: Domestic + Returns
+
+Domestic label (service code from metadata — `GND` shown illustratively):
+
+```json
+{
+  "fromAddress": { "name": "Warehouse", "addressLine1": "1001 Bridgeport Ave", "cityTown": "Shelton", "stateProvince": "CT", "postalCode": "06484", "countryCode": "US", "phone": "2035551212" },
+  "toAddress":   { "name": "ABC Office", "company": "ABC Office", "addressLine1": "500 Market St", "cityTown": "San Francisco", "stateProvince": "CA", "postalCode": "94105", "countryCode": "US", "phone": "4155551212", "residential": false },
+  "parcel": { "weight": 5, "weightUnit": "LB", "length": 12, "width": 10, "height": 8, "dimUnit": "IN" },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": { "carrier": "UPS", "service": "GND" },
+  "labelSize": "DOC_4X6",
+  "labelType": "SHIPPING_LABEL",
+  "labelFormat": "ZPL2",
+  "contentType": "BASE64"
+}
+```
+
+For a **UPS return**, POST to `.../api/v2/shipments?isReturn=true` and include a `returnOptions` object (or `serviceId: PRL` via `specialServices`) — otherwise the request fails.
+
+---
+
+## Gotchas
+
+- Service/parcel/special codes must be pulled at runtime — none are in the static docs; don't invent them.
+- PB-rated UPS is gated by eligibility + PB Support.
+- Only subscription/account-whitelisted capabilities are usable.
+- `carrierAccountId` must match the location resolved by `X-PB-LocationId`.
+- Always pass accurate dimensions — UPS dimensional weight matters.
+- UPS returns require `returnOptions` (or `PRL`).
+
+---
+
+## Further Reading
+
+- UPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/ups
+- Carrier Accounts API: https://docs.shipping360.pitneybowes.com/openapi/carrieraccounts
+- Release Notes: https://docs.shipping360.pitneybowes.com/docs/releases
+
+</script>
+<script src="../assets/tutorial.js"></script>
+</body>
+</html>

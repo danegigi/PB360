@@ -1,0 +1,1608 @@
+# Pitney Bowes Shipping360 API: UPS and USPS Developer Guide
+
+**Scope:** OAuth, address verification, rates, domestic labels, international labels, return labels, voiding/cancelling labels, tracking, and manifest basics.
+
+**Goal:** Give enough practical information to start coding without turning this into a full API reference.
+
+> **Verified against the live docs on 2026-09-03** (`https://docs.shipping360.pitneybowes.com`, API portal release **v1.0.52**, Aug 27 2026). Endpoint paths, the OAuth flow, and request/response schemas below reflect the current **V2** APIs. The exact enum values, service codes, and per-carrier options can still change — confirm final field names and allowed values in the official reference and the [Carrier Catalog](https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/carrier-catalog) before production.
+
+---
+
+## Table of Contents
+
+1. [How Shipping360 Works](#1-how-shipping360-works)
+2. [Environment and Base URLs](#2-environment-and-base-urls)
+3. [OAuth / Access Token](#3-oauth--access-token)
+4. [Common Headers](#4-common-headers)
+5. [Address Verification](#5-address-verification)
+6. [Getting Rates](#6-getting-rates)
+7. [Generating Domestic Labels](#7-generating-domestic-labels)
+8. [Generating International Labels](#8-generating-international-labels)
+9. [Return Labels](#9-return-labels)
+10. [Voiding / Cancelling Labels](#10-voiding--cancelling-labels)
+11. [Manifest / End of Day](#11-manifest--end-of-day)
+12. [UPS Notes](#12-ups-notes)
+13. [USPS Notes](#13-usps-notes)
+14. [Simple Go Client Example](#14-simple-go-client-example)
+15. [Official SDKs](#15-official-sdks)
+16. [Database Fields to Save](#16-database-fields-to-save)
+17. [What Changed Recently](#17-what-changed-recently)
+18. [Further Reading Links](#18-further-reading-links)
+
+---
+
+## 1. How Shipping360 Works
+
+Pitney Bowes Shipping360 gives you one shipping platform for many carriers. In your app, you usually do this:
+
+```text
+Order Created
+    ↓
+Verify Address
+    ↓
+Get Rates from UPS / USPS / FedEx / ...
+    ↓
+Pick a Service
+    ↓
+Create Label (Create Shipment V2)
+    ↓
+Save Shipment ID, Tracking Number, Label URL/Base64, Cost
+    ↓
+Print Label
+    ↓
+Track Shipment
+    ↓
+Cancel/Void or Return if needed
+    ↓
+Manifest / Close Out if required
+```
+
+1. **Before shipping:** validate address and get rate.
+2. **During shipping:** create label and save response.
+3. **After shipping:** track, cancel/void, return, or manifest.
+
+> Shipping360 is multi-carrier. UPS and USPS are the focus of this guide, but the same **Create Shipment V2** endpoint also drives FedEx, Purolator, Canada Post (CPC), DHL Express, and 25+ other carriers — you change the `carrier`/`service` values, not the endpoint. See the [Carrier Catalog](https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/carrier-catalog) for the full list and each carrier's supported services, parcel types, label formats, and doc sizes.
+
+Further reading:
+
+- Quick Overview: https://docs.shipping360.pitneybowes.com/docs
+- Shipping API Reference: https://docs.shipping360.pitneybowes.com/openapi/shipping
+- Carrier Catalog: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/carrier-catalog
+
+---
+
+## 2. Environment and Base URLs
+
+Use sandbox first.
+
+> There are **two different base hosts**: the `/auth` service issues tokens, and the `/shipping` service does everything else. They share the same domain but different path prefixes. There is also a **separate Canada infrastructure** with its own hosts.
+
+### Sandbox Base URLs (US)
+
+```text
+Auth (token):   https://api-sandbox.sendpro360.pitneybowes.com/auth
+Shipping:       https://api-sandbox.sendpro360.pitneybowes.com/shipping
+```
+
+### Production Base URLs (US)
+
+```text
+Auth (token):   https://api.sendpro360.pitneybowes.com/auth
+Shipping:       https://api.sendpro360.pitneybowes.com/shipping
+```
+
+### Canada Infrastructure
+
+```text
+Sandbox Auth:       https://api-ppd.shipping360.pitneybowes.com/ca/auth
+Sandbox Shipping:   https://api-ppd.shipping360.pitneybowes.com/ca/shipping
+Production Auth:    https://api.sendpro360.pitneybowes.com/ca/auth
+Production Shipping:https://api.shipping360.pitneybowes.com/ca/shipping
+```
+
+### Common Environment Variables
+
+```bash
+PB_AUTH_URL=https://api-sandbox.sendpro360.pitneybowes.com/auth
+PB_SHIPPING_URL=https://api-sandbox.sendpro360.pitneybowes.com/shipping
+PB_CLIENT_ID=your_sandbox_client_id
+PB_CLIENT_SECRET=your_sandbox_client_secret
+PB_DEVELOPER_PARTNER_ID=optional_partner_id
+```
+
+### What to Configure in Your App
+
+| Setting | Required? | Example | Notes |
+|---|---:|---|---|
+| `authUrl` | Yes | Sandbox or production `/auth` base | Token endpoint lives here, not under `/shipping`. |
+| `shippingUrl` | Yes | Sandbox or production `/shipping` base | All shipment/rate/address calls. |
+| `clientId` | Yes | From API Keys page | Used as the **username** in Basic Auth for the token call. |
+| `clientSecret` | Yes | From API Keys page | Used as the **password**. Store securely. Never expose in frontend. |
+| `developerPartnerId` | Sometimes | Partner ID | Sent as `X-PB-Developer-Partner-Id`. Required only when your developer account manages multiple partners. |
+| `locationId` | Sometimes | Location reference | Sent as `X-PB-LocationId`. **Required** when the shipment origin country differs from your enterprise default country. |
+| `carrierAccountId` | Often | UPS/USPS account reference | The carrier account configured in PB (resolved by location if omitted). |
+| `defaultLabelFormat` | Yes | `PDF`, `PNG`, `ZPL2`, or `GIF` | Pick based on printer type. Note: it is `ZPL2`, not `ZPL`. |
+| `defaultLabelSize` | Yes | `DOC_4X6`, `DOC_4X8`, or `DOC_8X11` | Thermal printers usually use `DOC_4X6`. |
+
+Further reading:
+
+- Quick Overview: https://docs.shipping360.pitneybowes.com/docs
+- Authentication: https://docs.shipping360.pitneybowes.com/docs/auth/catalog
+
+---
+
+## 3. OAuth / Access Token
+
+Before you call shipping APIs, you need a Bearer token. The token is generated from the **Base64-encoded `client_id:secret`** using **HTTP Basic Auth** — there is no `grant_type` body field.
+
+### Token Endpoint
+
+```text
+POST {authUrl}/api/v1/token
+```
+
+Full sandbox example:
+
+```text
+POST https://api-sandbox.sendpro360.pitneybowes.com/auth/api/v1/token
+```
+
+### Required OAuth Inputs
+
+| Item | Required? | Where it goes | Description |
+|---|---:|---|---|
+| `Client ID` | Yes | Basic Auth **username** | Unique identifier for your client application. |
+| `Secret` | Yes | Basic Auth **password** | Confidential string that authenticates the client. Keep private. |
+| `Content-Type` | Yes | Header | `application/json`. |
+
+> There is **no** `grant_type`, `scope`, or form body to send. Authentication is entirely the `Authorization: Basic base64(clientId:secret)` header, which `curl -u` builds for you.
+
+### OAuth Request Example
+
+```bash
+curl -i -X POST \
+  -u 'YOUR_CLIENT_ID:YOUR_CLIENT_SECRET' \
+  'https://api-sandbox.sendpro360.pitneybowes.com/auth/api/v1/token' \
+  -H 'Content-Type: application/json'
+```
+
+### OAuth Response Example
+
+```json
+{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "Bearer",
+  "expires_in": 14400,
+  "scope": "psapi"
+}
+```
+
+### Fields to Save
+
+| Response Field | Save? | Why |
+|---|---:|---|
+| `access_token` | Yes, temporarily | Use this as the Bearer token in API requests. |
+| `token_type` | Optional | Usually `Bearer`. |
+| `expires_in` | Yes | Seconds until expiry — **14400 (4 hours)**. |
+| `scope` | Optional | Usually `psapi`. |
+| `created_at` | Yes, your own field | Store token creation time in memory/cache to compute expiry. |
+
+### Token Handling Rule
+
+The token is valid for **4 hours**. Do not request a new token for every API call. Cache it until it is close to expiry.
+
+Simple logic:
+
+```text
+If no token exists → request token
+If token expires in less than 5 minutes → request new token
+Otherwise → reuse existing token
+```
+
+Further reading:
+
+- Authentication: https://docs.shipping360.pitneybowes.com/docs/auth/catalog
+- Get Access Token: https://docs.shipping360.pitneybowes.com/openapi/auth/other/getaccesstoken
+
+---
+
+## 4. Common Headers
+
+Most Shipping360 shipping requests use these headers:
+
+```http
+Authorization: Bearer YOUR_ACCESS_TOKEN
+Content-Type: application/json
+Accept: application/json
+```
+
+Depending on your account and shipment, you may also send:
+
+```http
+X-PB-Developer-Partner-Id: YOUR_PARTNER_ID
+X-PB-LocationId: YOUR_LOCATION_ID
+X-PB-TransactionId: YOUR_UNIQUE_TXN_ID
+```
+
+### Header Table
+
+| Header | Required? | Description |
+|---|---:|---|
+| `Authorization` | Yes | Bearer token from OAuth. |
+| `Content-Type` | Yes | `application/json` for shipping APIs. |
+| `Accept` | Recommended | Ask for JSON response. |
+| `X-PB-Developer-Partner-Id` | Sometimes | Required when your developer account has multiple partners. |
+| `X-PB-LocationId` | Sometimes | Identifies the enterprise/division/location for processing and billing. **Required** when the origin country differs from the enterprise default country; otherwise optional (defaults to the enterprise location). |
+| `X-PB-TransactionId` | Optional | Your own unique ID for correlating/debugging a request. |
+
+Further reading:
+
+- Quick Overview: https://docs.shipping360.pitneybowes.com/docs
+- Authentication: https://docs.shipping360.pitneybowes.com/docs/auth/catalog
+
+---
+
+## 5. Address Verification
+
+Before rating or label creation, verify the recipient address. This reduces failed labels and wrong delivery addresses.
+
+### Endpoint
+
+```text
+POST {shippingUrl}/api/v1/address/verify
+```
+
+Full sandbox example:
+
+```text
+POST https://api-sandbox.sendpro360.pitneybowes.com/shipping/api/v1/address/verify
+```
+
+### Request Fields
+
+| Field | Required? | Example | Description |
+|---|---:|---|---|
+| `name` | Recommended | `John Smith` | Recipient name. |
+| `company` | Optional | `ABC Store` | Business name. |
+| `addressLine1` | Yes | `1001 Bridgeport Ave` | Street address. |
+| `addressLine2` | Optional | `Suite 200` | Apartment, unit, suite. |
+| `cityTown` | Yes | `Shelton` | City. |
+| `stateProvince` | Usually | `CT` | State or province. |
+| `postalCode` | Yes | `06484` | ZIP/postal code. |
+| `countryCode` | Yes | `US` | Two-letter ISO country code. |
+| `phone` | Recommended | `2035551212` | Useful for carriers and international. |
+| `email` | Optional | `customer@example.com` | Useful for notifications. |
+
+### Example Request
+
+```bash
+curl --location 'https://api-sandbox.sendpro360.pitneybowes.com/shipping/api/v1/address/verify' \
+  --header 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "name": "John Smith",
+    "addressLine1": "1001 Bridgeport AA",
+    "cityTown": "Shelton",
+    "countryCode": "US",
+    "postalCode": "06484"
+  }'
+```
+
+### Example Response
+
+```json
+{
+  "addressLine1": "1001 Bridgeport Ave",
+  "cityTown": "Shelton",
+  "countryCode": "US",
+  "name": "John Smith",
+  "postalCode": "06484-4675",
+  "residential": false,
+  "stateProvince": "CT",
+  "status": "VALIDATED_CHANGED"
+}
+```
+
+### Important Response Fields
+
+| Field | Meaning |
+|---|---|
+| `status` | Whether the address is valid or was changed (e.g. `VALIDATED_AND_NOT_CHANGED`, `VALIDATED_CHANGED`). |
+| `residential` | Whether the address is residential. This can affect rates. |
+| `postalCode` | May be normalized, such as ZIP+4 in the US. |
+| `addressLine1` | May be corrected. Save/display the corrected version. |
+
+> **Do not do strict schema validation on the response.** PB explicitly advises clients to tolerate new fields/objects so future additions don't break your integration.
+
+Further reading:
+
+- Address APIs: https://docs.shipping360.pitneybowes.com/openapi/address
+- Quick Overview Address Example: https://docs.shipping360.pitneybowes.com/docs
+
+---
+
+## 6. Getting Rates
+
+Rates tell you shipping cost and available services before buying a label. Rating uses the same address/parcel shape as label creation, so once you can rate, creating a label is a small step.
+
+### What You Need Before Rating
+
+1. Ship-from address (`fromAddress`).
+2. Ship-to address (`toAddress`).
+3. `parcelType` (e.g. `PKG`).
+4. Package weight and dimensions (`parcel`).
+5. A `rateShopBy` mode — usually `carrier`.
+6. Carrier/service in `byCarrier` (or leave the carrier open to rate-shop across all carriers).
+7. Customs info for international.
+
+### Endpoint
+
+```text
+POST {shippingUrl}/api/v2/rates
+```
+
+### Request Shape (V2)
+
+The V2 Rate API is **rate-shop-oriented**. You pick a `rateShopBy` strategy:
+
+| `rateShopBy` | Meaning |
+|---|---|
+| `carrier` | You name the carrier (and optionally a specific service) in `byCarrier`. |
+| `rateGroup` | Use a predefined rate group (Cheapest / Fastest). |
+| `ruleSet` | Apply your automation rules to pick carrier/service. |
+| `shipViaCode` | Use a single saved code representing carrier+account+service+parcel+special services. |
+
+`byCarrier` behavior:
+- Provide `carrier` **or** `carrierAccountId` → all rates for that carrier.
+- Provide carrier **and** `service` → a single rate for that service.
+- **Omit `byCarrier` entirely** → rate-shop across every carrier in your subscription.
+
+### Common Request Fields
+
+| Field | Required? | Example | Description |
+|---|---:|---|---|
+| `fromAddress` | Yes | Object | Sender/warehouse address. |
+| `toAddress` | Yes | Object | Recipient address. |
+| `parcel` | Yes | Object | Weight and dimensions (see below). |
+| `parcel.weight` | Yes | `2.5` | Package weight. |
+| `parcel.weightUnit` | Yes | `LB`, `OZ`, `KG`, `G` | Weight unit. |
+| `parcel.length` / `width` / `height` | Recommended | `10` | Package dimensions. |
+| `parcel.dimUnit` | Recommended | `IN` or `CM` | Dimension unit (note: `dimUnit`, not `dimensionUnit`). |
+| `parcel.packageValue` | Optional | `50` | Declared package value. |
+| `parcelType` | Yes | `PKG`, `ENVELOPE`, `FLAT_RATE_BOX` | Carrier-specific parcel type. |
+| `rateShopBy` | Yes | `carrier` | Rate-shop strategy. |
+| `byCarrier` | Depends | `{ "carrier": "USPS", "service": "PM" }` | Carrier/service selector (required for `rateShopBy: carrier`). |
+| `specialServices` | Optional | Object | Signature, insurance, etc. |
+| `deliveryOption` | Optional | `{ "deliverBy": "2026-07-10" }` | Deliver-by scheduling. |
+| `customs` | International | Object | Required for cross-border rating. |
+
+### Domestic Rate Example: USPS
+
+```json
+{
+  "fromAddress": {
+    "name": "Warehouse",
+    "addressLine1": "1001 Bridgeport Ave",
+    "cityTown": "Shelton",
+    "stateProvince": "CT",
+    "postalCode": "06484",
+    "countryCode": "US"
+  },
+  "toAddress": {
+    "name": "Jane Customer",
+    "addressLine1": "123 Main St",
+    "cityTown": "Los Angeles",
+    "stateProvince": "CA",
+    "postalCode": "90001",
+    "countryCode": "US"
+  },
+  "parcel": {
+    "weight": 2.5,
+    "weightUnit": "LB",
+    "length": 10,
+    "width": 7,
+    "height": 4,
+    "dimUnit": "IN",
+    "packageValue": 50
+  },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": {
+    "carrier": "USPS"
+  }
+}
+```
+
+### Domestic Rate Example: UPS (single service)
+
+```json
+{
+  "fromAddress": {
+    "name": "Warehouse",
+    "addressLine1": "1001 Bridgeport Ave",
+    "cityTown": "Shelton",
+    "stateProvince": "CT",
+    "postalCode": "06484",
+    "countryCode": "US"
+  },
+  "toAddress": {
+    "name": "Business Customer",
+    "company": "ABC Office",
+    "addressLine1": "500 Market St",
+    "cityTown": "San Francisco",
+    "stateProvince": "CA",
+    "postalCode": "94105",
+    "countryCode": "US",
+    "residential": false
+  },
+  "parcel": {
+    "weight": 5,
+    "weightUnit": "LB",
+    "length": 12,
+    "width": 10,
+    "height": 8,
+    "dimUnit": "IN"
+  },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": {
+    "carrier": "UPS",
+    "service": "GND"
+  }
+}
+```
+
+### Example Rate Response (abridged)
+
+```json
+{
+  "parcel": {
+    "weight": 2.5,
+    "weightUnit": "LB",
+    "length": 10,
+    "width": 7,
+    "height": 4,
+    "dimUnit": "IN"
+  },
+  "rate": [
+    {
+      "carrier": "usps",
+      "carrierAccount": "vpjoz235J1Wp",
+      "serviceId": "PM",
+      "parcelType": "PKG",
+      "rateTypeId": "CONTRACT_RATES",
+      "baseCharge": 9.85,
+      "totalCarrierCharge": 9.85,
+      "destinationZone": "8",
+      "isHazmat": false,
+      "deliveryCommitment": {
+        "estimatedDeliveryDateTime": "2026-07-10 18:00:00.000",
+        "guarantee": "NONE",
+        "minEstimatedNumberOfDays": "2",
+        "maxEstimatedNumberOfDays": "3"
+      }
+    },
+    {
+      "carrier": "usps",
+      "serviceId": "GA",
+      "parcelType": "PKG",
+      "rateTypeId": "CONTRACT_RATES",
+      "baseCharge": 6.44,
+      "totalCarrierCharge": 6.44,
+      "destinationZone": "8"
+    }
+  ]
+}
+```
+
+### Rate Response Fields to Use
+
+| Field | Description |
+|---|---|
+| `carrier` | Carrier that returned the rate. |
+| `carrierAccount` | Carrier account the rate belongs to. Save it — you may pass it back as `carrierAccountId`. |
+| `serviceId` | Service to use when creating the label. |
+| `parcelType` | Parcel type used. |
+| `baseCharge` | Base carrier charge before special services. |
+| `totalCarrierCharge` | Total shipping cost (base + special services + surcharges). |
+| `rateTypeId` | e.g. `CONTRACT_RATES`, `RETAIL`, `COMMERCIAL`, `ONE_RATE`. |
+| `destinationZone` | Carrier zone for the shipment. |
+| `deliveryCommitment` | Object with estimated delivery date/time and min/max days. |
+| `isHazmat` | Whether the rate reflects a hazmat shipment. |
+| `publishedTotalCarrierCharge` | For UPS/FedEx, shows the standard (published) rate vs the discounted rate applied. |
+
+### How to Pick a Rate
+
+For a basic app:
+
+```text
+If customer selected a service → use that serviceId
+Else if cheapest shipping → choose lowest totalCarrierCharge
+Else if fastest shipping → choose earliest deliveryCommitment.estimatedDeliveryDateTime
+Else show the rates to the user
+```
+
+Further reading:
+
+- Rate Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/rateshipment
+- RateGroup APIs: https://docs.shipping360.pitneybowes.com/openapi/rategroup
+- UPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/ups
+- USPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/usps
+
+---
+
+## 7. Generating Domestic Labels
+
+A label is purchased postage. Only create a label after the order is ready to ship. Labels are created through **Create Shipment V2**.
+
+### Endpoint
+
+```text
+POST {shippingUrl}/api/v2/shipments
+```
+
+Optional query params:
+
+| Query param | Description |
+|---|---|
+| `isReturn` | `true` to create a return label (see [Return Labels](#9-return-labels)). |
+| `includeDeliveryCommitment` | `true` (default) includes delivery estimate in the response. |
+
+### Required Label Fields
+
+| Field | Required? | Example | Description |
+|---|---:|---|---|
+| `fromAddress` | Yes* | Object | Sender address. Can be defaulted from a Default ID or the resolved Location. |
+| `toAddress` | Yes | Object | Recipient address. |
+| `parcel` | Yes | Object | Weight and dimensions. |
+| `parcelType` | Yes | `PKG` | Carrier parcel type. |
+| `rateShopBy` | Yes | `carrier` | How to select carrier/service. |
+| `byCarrier` | Depends | `{ "carrier": "USPS", "service": "PM" }` | Carrier + service (for `rateShopBy: carrier`). |
+| `labelSize` | Yes | `DOC_4X6` | `DOC_4X6`, `DOC_4X8`, or `DOC_8X11`. |
+| `labelType` | Yes | `SHIPPING_LABEL` | `SHIPPING_LABEL` or `QR_CODE` (QR is USPS-only). |
+| `labelFormat` | Yes | `PDF` | `PDF`, `ZPL2`, `PNG`, or `GIF`. |
+| `contentType` | Recommended | `URL` | `URL` (PDF/GIF) or `BASE64` (ZPL2/PNG/GIF). |
+| `dateOfShipment` | Recommended | `2026-07-07` | `YYYY-MM-DD`. |
+| `references` | Optional | Object | Order number, PO, notes printed on the label. |
+| `specialServices` | Optional | Array | Insurance, signature, etc. |
+
+> **Label fields are top-level**, not nested under a `labelOptions` object. And the parcel dimension unit is `dimUnit`.
+
+### Label Format Options
+
+| Option | Use Case |
+|---|---|
+| `PDF` | Best for browser download and regular printers (supports all doc sizes). |
+| `ZPL2` | Best for Zebra thermal printers (`DOC_4X6` only; `BASE64` content). |
+| `PNG` | Image display or custom print systems (`BASE64`). |
+| `GIF` | Required for USPS `QR_CODE` labels. |
+
+### Label Size Options
+
+| Option | Use Case |
+|---|---|
+| `DOC_4X6` | Standard thermal shipping label. |
+| `DOC_4X8` | International shipments. |
+| `DOC_8X11` | Regular letter-size printer. |
+
+> USPS also supports a **4x3** label format (added July 2026) for certain package types.
+
+### Domestic Label Request Example: USPS
+
+```json
+{
+  "fromAddress": {
+    "name": "Warehouse",
+    "company": "My Store",
+    "addressLine1": "1001 Bridgeport Ave",
+    "cityTown": "Shelton",
+    "stateProvince": "CT",
+    "postalCode": "06484",
+    "countryCode": "US",
+    "phone": "2035551212"
+  },
+  "toAddress": {
+    "name": "Jane Customer",
+    "addressLine1": "123 Main St",
+    "cityTown": "Los Angeles",
+    "stateProvince": "CA",
+    "postalCode": "90001",
+    "countryCode": "US",
+    "phone": "2135551212"
+  },
+  "parcel": {
+    "weight": 2.5,
+    "weightUnit": "LB",
+    "length": 10,
+    "width": 7,
+    "height": 4,
+    "dimUnit": "IN"
+  },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": {
+    "carrier": "USPS",
+    "service": "PM"
+  },
+  "labelSize": "DOC_4X6",
+  "labelType": "SHIPPING_LABEL",
+  "labelFormat": "PDF",
+  "contentType": "URL",
+  "references": {
+    "reference1": "ORDER-10001"
+  },
+  "dateOfShipment": "2026-07-07"
+}
+```
+
+### Domestic Label Request Example: UPS (ZPL for thermal printer)
+
+```json
+{
+  "fromAddress": {
+    "name": "Warehouse",
+    "company": "My Store",
+    "addressLine1": "1001 Bridgeport Ave",
+    "cityTown": "Shelton",
+    "stateProvince": "CT",
+    "postalCode": "06484",
+    "countryCode": "US",
+    "phone": "2035551212"
+  },
+  "toAddress": {
+    "name": "Business Customer",
+    "company": "ABC Office",
+    "addressLine1": "500 Market St",
+    "cityTown": "San Francisco",
+    "stateProvince": "CA",
+    "postalCode": "94105",
+    "countryCode": "US",
+    "phone": "4155551212",
+    "residential": false
+  },
+  "parcel": {
+    "weight": 5,
+    "weightUnit": "LB",
+    "length": 12,
+    "width": 10,
+    "height": 8,
+    "dimUnit": "IN"
+  },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": {
+    "carrier": "UPS",
+    "service": "GND"
+  },
+  "labelSize": "DOC_4X6",
+  "labelType": "SHIPPING_LABEL",
+  "labelFormat": "ZPL2",
+  "contentType": "BASE64",
+  "dateOfShipment": "2026-07-07"
+}
+```
+
+### Example Label Response (abridged)
+
+```json
+{
+  "correlationId": "6270e32715df4c4884a2008f943fe179",
+  "shipmentId": "USPS2200613202723337",
+  "parcelTrackingNumber": "9470109109628000114503",
+  "carrierAccountId": "GOaVO7vERQxO",
+  "labelLayout": [
+    {
+      "contentType": "URL",
+      "contents": "https://prv-labels-cls.gcs.pitneybowes.com/usps/.../label.pdf",
+      "fileFormat": "PDF",
+      "size": "DOC_4X6",
+      "type": "SHIPPING_LABEL"
+    }
+  ],
+  "rate": {
+    "carrier": "USPS",
+    "serviceId": "PM",
+    "baseCharge": 9.85,
+    "totalCarrierCharge": 9.85,
+    "currencyCode": "USD",
+    "destinationZone": "1"
+  }
+}
+```
+
+### Fields You Should Save
+
+| Field | Why Save It |
+|---|---|
+| `shipmentId` | Needed for cancel/void, reprint, tracking, support. |
+| `parcelTrackingNumber` | Show to customer and use for tracking. |
+| `correlationId` | Ties the transaction in PB's system — helpful for support. |
+| `carrierAccountId` | Needed for reporting and carrier-specific logic. |
+| `rate.serviceId` | Shows selected service. |
+| `rate.totalCarrierCharge` | Your actual shipping cost. |
+| `labelLayout[].contents` | The label URL or Base64 — needed to print/reprint. |
+| Raw response JSON | Helpful for debugging. |
+
+Further reading:
+
+- Create Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/createshipmentv2
+- Reprint Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/reprintshipmentbyidv2
+- UPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/ups
+- USPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/usps
+
+---
+
+## 8. Generating International Labels
+
+International labels need everything domestic labels need, plus **customs** information. In V2 the customs data lives under a top-level `customs` object with `customsInfo` and `customsItems`.
+
+> As of March 2026, customs line items are also accepted on **domestic** shipments where a carrier requires them (e.g. RMG). For US↔US you normally omit `customs`.
+
+### International Required Additions (inside `customs`)
+
+| Field | Required? | Example | Description |
+|---|---:|---|---|
+| `customsInfo.reasonForExport` | Yes | `SALE` | Why the item is exported. |
+| `customsInfo.currencyCode` | Yes | `USD` | Currency for customs value. |
+| `customsInfo.incoterm` | Optional | `DAP`, `DDP` | Who pays duties/taxes. |
+| `customsItems[].description` | Yes | `Cotton t-shirt` | Clear item description. Avoid vague words like "gift" or "item". |
+| `customsItems[].quantity` | Yes | `2` | Item quantity. |
+| `customsItems[].unitPrice` | Yes | `15.00` | Value per item. |
+| `customsItems[].weight` | Yes | `0.5` | Item weight. |
+| `customsItems[].weightUnit` | Yes | `LB` | Item weight unit. |
+| `customsItems[].countryOfOrigin` | Usually | `US` | Where the product was made. |
+| `customsItems[].hsTariffCode` | Recommended | `610910` | Harmonized tariff code. |
+
+### Common Reason for Export Options
+
+| Option | Meaning |
+|---|---|
+| `SALE` | Customer purchased the item. |
+| `GIFT` | Gift shipment. |
+| `SAMPLE` | Commercial sample. |
+| `RETURN` | Returned merchandise. |
+| `REPAIR` | Item sent for repair. |
+
+### Common Incoterm Options
+
+| Option | Meaning |
+|---|---|
+| `DAP` | Delivered at Place. Buyer usually pays duties/taxes. |
+| `DDP` | Delivered Duty Paid. Seller pays duties/taxes. |
+| `DDU` | Delivered Duty Unpaid. Older term, still seen sometimes. |
+
+### International Label Example: USPS US → Canada
+
+```json
+{
+  "fromAddress": {
+    "name": "Warehouse",
+    "company": "My Store",
+    "addressLine1": "1001 Bridgeport Ave",
+    "cityTown": "Shelton",
+    "stateProvince": "CT",
+    "postalCode": "06484",
+    "countryCode": "US",
+    "phone": "2035551212"
+  },
+  "toAddress": {
+    "name": "Canadian Customer",
+    "addressLine1": "100 Queen St W",
+    "cityTown": "Toronto",
+    "stateProvince": "ON",
+    "postalCode": "M5H 2N2",
+    "countryCode": "CA",
+    "phone": "4165551212",
+    "email": "customer@example.com"
+  },
+  "parcel": {
+    "weight": 2,
+    "weightUnit": "LB",
+    "length": 10,
+    "width": 7,
+    "height": 4,
+    "dimUnit": "IN"
+  },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": {
+    "carrier": "USPS",
+    "service": "PMI"
+  },
+  "customs": {
+    "customsInfo": {
+      "reasonForExport": "SALE",
+      "currencyCode": "USD",
+      "incoterm": "DAP"
+    },
+    "customsItems": [
+      {
+        "description": "Men's cotton t-shirt",
+        "quantity": 2,
+        "unitPrice": 15.00,
+        "weight": 0.5,
+        "weightUnit": "LB",
+        "countryOfOrigin": "US",
+        "hsTariffCode": "610910"
+      }
+    ]
+  },
+  "labelSize": "DOC_4X6",
+  "labelType": "SHIPPING_LABEL",
+  "labelFormat": "PDF",
+  "contentType": "URL",
+  "dateOfShipment": "2026-07-07"
+}
+```
+
+### International Label Example: UPS US → Canada
+
+```json
+{
+  "fromAddress": {
+    "name": "Warehouse",
+    "company": "My Store",
+    "addressLine1": "1001 Bridgeport Ave",
+    "cityTown": "Shelton",
+    "stateProvince": "CT",
+    "postalCode": "06484",
+    "countryCode": "US",
+    "phone": "2035551212"
+  },
+  "toAddress": {
+    "name": "Canadian Business",
+    "company": "ABC Canada Inc",
+    "addressLine1": "100 Queen St W",
+    "cityTown": "Toronto",
+    "stateProvince": "ON",
+    "postalCode": "M5H 2N2",
+    "countryCode": "CA",
+    "phone": "4165551212",
+    "email": "receiver@example.com"
+  },
+  "parcel": {
+    "weight": 5,
+    "weightUnit": "LB",
+    "length": 12,
+    "width": 10,
+    "height": 8,
+    "dimUnit": "IN"
+  },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": {
+    "carrier": "UPS",
+    "service": "STD"
+  },
+  "customs": {
+    "customsInfo": {
+      "reasonForExport": "SALE",
+      "currencyCode": "USD",
+      "incoterm": "DAP",
+      "invoiceNumber": "INV-10001"
+    },
+    "customsItems": [
+      {
+        "description": "Leather wallet",
+        "quantity": 1,
+        "unitPrice": 45.00,
+        "weight": 1,
+        "weightUnit": "LB",
+        "countryOfOrigin": "US",
+        "hsTariffCode": "420231"
+      }
+    ]
+  },
+  "labelSize": "DOC_4X6",
+  "labelType": "SHIPPING_LABEL",
+  "labelFormat": "PDF",
+  "contentType": "URL",
+  "dateOfShipment": "2026-07-07"
+}
+```
+
+### International Tips
+
+- Use specific descriptions: `Men's cotton t-shirt` is better than `clothes`.
+- Use correct customs value. Do not put `$0` unless allowed.
+- Add HS codes (`hsTariffCode`) when possible.
+- Add country of origin.
+- For repeatable items, define a **Customs Product** once and reference its `customsProductId` in the shipment (via OMS/Customs Product APIs) instead of re-sending every field.
+- For EU-destined UPS shipments, set the optional `consigneeType` to help EU De Minimis customs clearance (added Aug 2026).
+- Store customs data with the shipment for future support/refunds/returns.
+- Consider **Electronic Trade Documents (ETD)**: upload invoices/certificates via the Upload ETD API and reference them in `customsDocuments` to skip physical paperwork.
+
+Further reading:
+
+- Customs Product API: https://docs.shipping360.pitneybowes.com/openapi/customproduct
+- Importer of Record API: https://docs.shipping360.pitneybowes.com/openapi/importerofrecord
+- USPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/usps
+- UPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/ups
+
+---
+
+## 9. Return Labels
+
+A return label lets the customer ship the package back.
+
+> **Important:** the standalone "Create Return Label Shipment" API is **deprecated**. Generate returns through the normal **Create Shipment V2** endpoint with the `isReturn=true` query parameter.
+
+### How Returns Work Now
+
+```text
+POST {shippingUrl}/api/v2/shipments?isReturn=true
+```
+
+- The addresses are reversed: `fromAddress` = customer, `toAddress` = your return center.
+- **UPS:** you must provide the `returnOptions` object **or** specify `serviceId: PRL` via `specialServices`. Otherwise the request fails.
+- **FedEx, Purolator, CPC:** `returnOptions` is optional when `isReturn=true`.
+- **USPS:** the account is **not charged** when the return label is created; charges apply only after the Scan-Based Return is actually inducted.
+
+### Return Label Fields
+
+| Field | Value |
+|---|---|
+| `fromAddress` | Customer address. |
+| `toAddress` | Your warehouse/return center. |
+| `byCarrier.carrier` | Usually the same carrier, but not always. |
+| `byCarrier.service` | Return-supported service. |
+| `parcel` | Expected package weight/dimensions. |
+| `returnOptions` | Required for UPS; optional for FedEx/Purolator/CPC. |
+| `references` | Optional — carry your RMA number / original shipment id here. |
+
+### Return Label Example (USPS)
+
+```json
+{
+  "fromAddress": {
+    "name": "Jane Customer",
+    "addressLine1": "123 Main St",
+    "cityTown": "Los Angeles",
+    "stateProvince": "CA",
+    "postalCode": "90001",
+    "countryCode": "US",
+    "phone": "2135551212"
+  },
+  "toAddress": {
+    "name": "Returns Department",
+    "company": "My Store",
+    "addressLine1": "1001 Bridgeport Ave",
+    "cityTown": "Shelton",
+    "stateProvince": "CT",
+    "postalCode": "06484",
+    "countryCode": "US",
+    "phone": "2035551212"
+  },
+  "parcel": {
+    "weight": 2.5,
+    "weightUnit": "LB",
+    "length": 10,
+    "width": 7,
+    "height": 4,
+    "dimUnit": "IN"
+  },
+  "parcelType": "PKG",
+  "rateShopBy": "carrier",
+  "byCarrier": {
+    "carrier": "USPS",
+    "service": "GA"
+  },
+  "references": {
+    "reference1": "RMA-90001",
+    "reference2": "SHIP123456789"
+  },
+  "labelSize": "DOC_4X6",
+  "labelType": "SHIPPING_LABEL",
+  "labelFormat": "PDF",
+  "contentType": "URL"
+}
+```
+
+Sent to `POST /api/v2/shipments?isReturn=true`.
+
+Further reading:
+
+- Create Shipment API (isReturn): https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/createshipmentv2
+- USPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/usps
+- UPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/ups
+
+---
+
+## 10. Voiding / Cancelling Labels
+
+Cancel a label when it was created by mistake and has not been used. In Shipping360 this is the **Cancel Shipment** operation; cancelling an unused prepaid label initiates an electronic refund.
+
+### When to Cancel
+
+Cancel if:
+
+- Wrong address.
+- Wrong weight.
+- Wrong carrier/service.
+- Customer cancelled before shipping.
+- Label printed twice by mistake.
+
+Do not cancel if:
+
+- Package was already accepted/scanned by the carrier.
+- Shipment is already in transit.
+- Carrier void window expired.
+
+### USPS Cancellation Rules
+
+- Cancel unused USPS prepaid labels within **30 days** of printing to start the refund.
+- Refunds are processed within **14 business days** of the request, if the label is unused.
+- Approved refunds credit back automatically to the paying account.
+- Refunds are **not** available for First-Class Mail letters and flats.
+- Inducting a label that has already been refunded is a federal offense — always destroy voided labels.
+
+### Endpoint
+
+```text
+POST {shippingUrl}/api/v2/shipments/cancel
+```
+
+> This is a **POST to `/api/v2/shipments/cancel`** with the shipment identifier in the body — not a `DELETE`.
+
+### Cancel Request Fields
+
+| Field | Required? | Example | Description |
+|---|---:|---|---|
+| `shipmentId` | One of | `USPS2200613202723337` | Shipment ID from the create-label response. |
+| `parcelTrackingNumber` | One of | `9470...` | Tracking number of the parcel. |
+| `references` | Optional | Object | Up to 2 references (max 30 chars each). |
+
+> Provide `shipmentId` **or** `parcelTrackingNumber`. If both are sent, `shipmentId` wins.
+
+### Cancel Example
+
+```bash
+curl -i -X POST \
+  'https://api-sandbox.sendpro360.pitneybowes.com/shipping/api/v2/shipments/cancel' \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "shipmentId": "USPS2200613202723337"
+  }'
+```
+
+### Cancel Response Example
+
+```json
+{
+  "carrier": "USPS",
+  "totalCarrierCharge": 0,
+  "parcelTrackingNumber": "9471309105156000624885",
+  "status": "INITIATED",
+  "references": {}
+}
+```
+
+The `status` is `INITIATED` (refund requested) or `APPROVED`.
+
+### What to Save After Cancel
+
+| Field | Why |
+|---|---|
+| `voidedAt` (your field) | Audit history. |
+| `status` | Know if the cancel/refund succeeded (`INITIATED` / `APPROVED`). |
+| Raw cancel response | Helpful for disputes/debugging. |
+
+### Basic Cancel Logic
+
+```text
+Find shipment in database
+Check status is LABEL_CREATED or READY_TO_SHIP (not in transit)
+Call POST /api/v2/shipments/cancel with shipmentId
+If success → mark shipment VOIDED, record refund status
+If failure → keep original status and show error
+Never delete the shipment record
+```
+
+Further reading:
+
+- Cancel Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/cancelshipmentbyidv2
+- Error Codes: https://docs.shipping360.pitneybowes.com/docs/support/error-codes
+
+---
+
+## 11. Manifest / End of Day
+
+Manifesting tells the carrier which packages are being handed over. For USPS this is the SCAN form (Form 3877 / 5630). End-of-Day (EOD) manifest is now supported for **all carriers** (added July 2026).
+
+### When to Manifest
+
+Usually manifest when:
+
+- Labels are printed.
+- Packages are ready for pickup/dropoff.
+- You want one document/barcode for the carrier to scan.
+
+You can also add shipments to a manifest as you create them, using `shipmentOptions.addToManifest: true` in the Create Shipment request.
+
+### Common Manifest Fields
+
+| Field | Required? | Example | Description |
+|---|---:|---|---|
+| `carrier` | Yes | `USPS` | Carrier to manifest. |
+| `parcelTrackingNumbers` / `shipmentId`s | Yes | Array | Shipments to include. USPS 3877 can also be generated by tracking numbers. |
+| `manifestDate` | Recommended | `2026-07-07` | Date of handoff. |
+| `inductionPostalCode` | Optional | `06905` | Where packages are tendered. |
+
+> The Manifest API also supports the `X-PB-LocationId` header for location-based account resolution.
+
+### Manifest Example
+
+```json
+{
+  "carrier": "USPS",
+  "manifestDate": "2026-07-07",
+  "parcelTrackingNumbers": [
+    "9470109109628000114503",
+    "9470109109628000114510"
+  ]
+}
+```
+
+### Manifest Response Example (abridged)
+
+```json
+{
+  "manifestId": "MANIFEST-10001",
+  "carrier": "USPS",
+  "status": "CREATED",
+  "manifestTrackingNumber": "...",
+  "documents": [
+    { "type": "MANIFEST", "contentType": "URL", "contents": "https://.../manifest.pdf" }
+  ]
+}
+```
+
+Further reading:
+
+- Manifest APIs: https://docs.shipping360.pitneybowes.com/openapi/manifest
+- USPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/usps
+- UPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/ups
+
+---
+
+## 12. UPS Notes
+
+UPS is commonly used for parcels, business shipments, residential deliveries, and international shipments.
+
+### Common UPS Services
+
+Confirm exact service codes in the carrier guide/catalog — codes are short tokens (e.g. `GND`, `STD`), not the long names.
+
+| Service | Typical Use |
+|---|---|
+| UPS Ground | Cheaper domestic ground delivery. |
+| UPS 2nd Day Air | Faster domestic delivery. |
+| UPS Next Day Air | Urgent domestic delivery. |
+| UPS Standard | Cross-border, often US/Canada. |
+| UPS Worldwide Saver / Expedited | International parcels. |
+
+### UPS Common Options
+
+| Option | Purpose |
+|---|---|
+| Residential delivery | Affects rating. |
+| Signature required | `deliveryConfirmation: SIGNATURE`. |
+| Adult signature | `deliveryConfirmation: ADULT_SIGNATURE` for restricted/high-value items. |
+| Declared value / insurance | `insurance: INSURANCE`. |
+| Saturday delivery | `handling: SATURDAY_DELIVERY` where available. |
+| Negotiated rates | Account-specific UPS rates. |
+| `consigneeType` | EU De Minimis customs support for EU-bound international. |
+
+### UPS Developer Advice
+
+- Always pass accurate dimensions — UPS dimensional weight matters.
+- Set `residential` correctly when known.
+- For international UPS, customs data must be clean and complete.
+- For UPS **returns**, `returnOptions` is required (or `serviceId: PRL`).
+- Save `parcelTrackingNumber` and `shipmentId` immediately after label creation.
+- UPS now returns `publishedTotalCarrierCharge` so you can show published vs discounted rate.
+
+Further reading:
+
+- UPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/ups
+- Carrier Catalog: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/carrier-catalog
+
+---
+
+## 13. USPS Notes
+
+USPS is commonly used for lightweight domestic shipments, PO boxes, residential delivery, and some international services.
+
+### Common USPS Services
+
+Confirm exact service codes in the carrier guide/catalog (e.g. `GA` Ground Advantage, `PM` Priority Mail, `EM` Priority Mail Express, `PMI` Priority Mail International).
+
+| Service | Typical Use |
+|---|---|
+| Ground Advantage | Affordable domestic parcels. |
+| Priority Mail | Faster domestic service. |
+| Priority Mail Express | Urgent domestic service. |
+| Media Mail | Books/media when eligible. |
+| First-Class Package International | Lightweight international packages. |
+| Priority Mail International | International parcels. |
+
+### USPS Common Options
+
+| Option | Purpose |
+|---|---|
+| Delivery confirmation | Tracking/proof of delivery. |
+| Signature confirmation | Recipient signature. |
+| Insurance | Protect high-value shipments. |
+| Flat rate packaging | USPS flat rate boxes/envelopes. |
+| SCAN form / manifest | End-of-day USPS acceptance document (Form 3877). |
+| QR code label | `labelType: QR_CODE`, `labelFormat: GIF` (USPS only). |
+
+### USPS Developer Advice
+
+- USPS is often good for lightweight packages.
+- USPS can deliver to PO boxes (set `isPOBox: true` on the address); UPS usually cannot.
+- Use valid USPS parcel types, especially for flat-rate packaging.
+- For international USPS, customs forms are important.
+- USPS returns are Scan-Based: no charge at label creation, charged after induction.
+- USPS 4x3 and QR-code labels are available for eligible package types.
+
+Further reading:
+
+- USPS Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/usps
+- Carrier Catalog: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/carrier-catalog
+
+---
+
+## 14. Simple Go Client Example
+
+A simplified Go client showing the structure. It reflects the **real** token flow (Basic Auth against `/auth/api/v1/token`) and the **V2** shipment shape. For production, prefer the [official Go SDK](#15-official-sdks).
+
+```go
+package shipping360
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "time"
+)
+
+type Client struct {
+    AuthURL      string // e.g. https://api-sandbox.sendpro360.pitneybowes.com/auth
+    ShippingURL  string // e.g. https://api-sandbox.sendpro360.pitneybowes.com/shipping
+    ClientID     string
+    ClientSecret string
+    AccessToken  string
+    TokenExpiry  time.Time
+    HTTPClient   *http.Client
+}
+
+func NewClient(authURL, shippingURL, clientID, clientSecret string) *Client {
+    return &Client{
+        AuthURL:      authURL,
+        ShippingURL:  shippingURL,
+        ClientID:     clientID,
+        ClientSecret: clientSecret,
+        HTTPClient:   &http.Client{Timeout: 30 * time.Second},
+    }
+}
+
+// ensureToken gets a Bearer token via Basic Auth against /auth/api/v1/token.
+// The token is valid for 4 hours (expires_in = 14400).
+func (c *Client) ensureToken() error {
+    if c.AccessToken != "" && time.Now().Before(c.TokenExpiry.Add(-5*time.Minute)) {
+        return nil
+    }
+
+    req, err := http.NewRequest("POST", c.AuthURL+"/api/v1/token", nil)
+    if err != nil {
+        return err
+    }
+    req.SetBasicAuth(c.ClientID, c.ClientSecret) // Client ID:Secret, Base64-encoded
+    req.Header.Set("Content-Type", "application/json")
+
+    resp, err := c.HTTPClient.Do(req)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode >= 300 {
+        return fmt.Errorf("token request failed with status %d", resp.StatusCode)
+    }
+
+    var tokenResp struct {
+        AccessToken string `json:"access_token"`
+        ExpiresIn   int    `json:"expires_in"`
+        TokenType   string `json:"token_type"`
+        Scope       string `json:"scope"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+        return err
+    }
+
+    c.AccessToken = tokenResp.AccessToken
+    c.TokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+    return nil
+}
+
+func (c *Client) postJSON(path string, payload any, out any) error {
+    if err := c.ensureToken(); err != nil {
+        return err
+    }
+
+    b, err := json.Marshal(payload)
+    if err != nil {
+        return err
+    }
+
+    req, err := http.NewRequest("POST", c.ShippingURL+path, bytes.NewBuffer(b))
+    if err != nil {
+        return err
+    }
+    req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    resp, err := c.HTTPClient.Do(req)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode >= 300 {
+        return fmt.Errorf("api request failed with status %d", resp.StatusCode)
+    }
+    if out != nil {
+        return json.NewDecoder(resp.Body).Decode(out)
+    }
+    return nil
+}
+```
+
+### Example: Verify Address in Go
+
+```go
+type Address struct {
+    Name          string `json:"name,omitempty"`
+    Company       string `json:"company,omitempty"`
+    AddressLine1  string `json:"addressLine1"`
+    AddressLine2  string `json:"addressLine2,omitempty"`
+    CityTown      string `json:"cityTown"`
+    StateProvince string `json:"stateProvince,omitempty"`
+    PostalCode    string `json:"postalCode"`
+    CountryCode   string `json:"countryCode"`
+    Phone         string `json:"phone,omitempty"`
+    Email         string `json:"email,omitempty"`
+    Residential   *bool  `json:"residential,omitempty"`
+    Status        string `json:"status,omitempty"`
+}
+
+func (c *Client) VerifyAddress(addr Address) (*Address, error) {
+    var verified Address
+    if err := c.postJSON("/api/v1/address/verify", addr, &verified); err != nil {
+        return nil, err
+    }
+    return &verified, nil
+}
+```
+
+### Example: Create a V2 Shipment (label) in Go
+
+```go
+type Parcel struct {
+    Length       float64 `json:"length,omitempty"`
+    Width        float64 `json:"width,omitempty"`
+    Height       float64 `json:"height,omitempty"`
+    DimUnit      string  `json:"dimUnit,omitempty"`
+    Weight       float64 `json:"weight"`
+    WeightUnit   string  `json:"weightUnit"`
+    PackageValue float64 `json:"packageValue,omitempty"`
+}
+
+type ByCarrier struct {
+    Carrier          string `json:"carrier,omitempty"`
+    Service          string `json:"service,omitempty"`
+    CarrierAccountID string `json:"carrierAccountId,omitempty"`
+}
+
+type CreateShipmentRequest struct {
+    FromAddress  Address   `json:"fromAddress"`
+    ToAddress    Address   `json:"toAddress"`
+    Parcel       Parcel    `json:"parcel"`
+    ParcelType   string    `json:"parcelType"`
+    RateShopBy   string    `json:"rateShopBy"` // "carrier"
+    ByCarrier    ByCarrier `json:"byCarrier"`
+    LabelSize    string    `json:"labelSize"`   // DOC_4X6 / DOC_4X8 / DOC_8X11
+    LabelType    string    `json:"labelType"`   // SHIPPING_LABEL / QR_CODE
+    LabelFormat  string    `json:"labelFormat"` // PDF / ZPL2 / PNG / GIF
+    ContentType  string    `json:"contentType"` // URL / BASE64
+    DateOfShipment string  `json:"dateOfShipment,omitempty"`
+}
+
+type LabelLayout struct {
+    ContentType string `json:"contentType"`
+    Contents    string `json:"contents"`
+    FileFormat  string `json:"fileFormat"`
+    Size        string `json:"size"`
+    Type        string `json:"type"`
+}
+
+type CreateShipmentResponse struct {
+    CorrelationID       string        `json:"correlationId"`
+    ShipmentID          string        `json:"shipmentId"`
+    ParcelTrackingNumber string       `json:"parcelTrackingNumber"`
+    CarrierAccountID    string        `json:"carrierAccountId"`
+    LabelLayout         []LabelLayout `json:"labelLayout"`
+    Rate                struct {
+        Carrier            string  `json:"carrier"`
+        ServiceID          string  `json:"serviceId"`
+        TotalCarrierCharge float64 `json:"totalCarrierCharge"`
+        CurrencyCode       string  `json:"currencyCode"`
+    } `json:"rate"`
+}
+
+func (c *Client) CreateShipment(req CreateShipmentRequest) (*CreateShipmentResponse, error) {
+    var out CreateShipmentResponse
+    if err := c.postJSON("/api/v2/shipments", req, &out); err != nil {
+        return nil, err
+    }
+    return &out, nil
+}
+```
+
+Further reading:
+
+- SDKs and Client Libraries: https://docs.shipping360.pitneybowes.com/docs/overview/sdks
+- Postman Collection: https://docs.shipping360.pitneybowes.com/docs/resources/postman
+
+---
+
+## 15. Official SDKs
+
+Pitney Bowes publishes official Shipping360 SDKs — prefer these over a hand-rolled client for production. All support Bearer-token auth (Client ID + Secret) and both sandbox and production environments, with built-in methods for address validation, rating, shipment creation, and batch processing.
+
+| SDK | Install |
+|---|---|
+| Go | `go get` the module |
+| TypeScript / JavaScript | `npm` |
+| Java | Maven / Gradle |
+| .NET | NuGet |
+| Python | `pip` (Python 3.7+) |
+
+Further reading:
+
+- SDKs and Client Libraries: https://docs.shipping360.pitneybowes.com/docs/overview/sdks
+- Postman Collection: https://docs.shipping360.pitneybowes.com/docs/resources/postman
+
+---
+
+## 16. Database Fields to Save
+
+At minimum, create a `shipments` table.
+
+```sql
+CREATE TABLE shipments (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    order_id VARCHAR(100) NOT NULL,
+    shipment_id VARCHAR(100) NOT NULL,
+    correlation_id VARCHAR(100),
+    tracking_number VARCHAR(100),
+    carrier VARCHAR(50) NOT NULL,
+    service_id VARCHAR(100),
+    carrier_account_id VARCHAR(100),
+    label_format VARCHAR(20),
+    label_size VARCHAR(20),
+    label_content_type VARCHAR(20),
+    label_url TEXT,
+    label_base64 LONGTEXT,
+    total_charge DECIMAL(10,2),
+    currency_code VARCHAR(10),
+    destination_zone VARCHAR(10),
+    status VARCHAR(50) NOT NULL,
+    is_return BOOLEAN DEFAULT FALSE,
+    original_shipment_id VARCHAR(100),
+    void_status VARCHAR(50),
+    refund_status VARCHAR(50),
+    raw_create_response JSON,
+    raw_void_response JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    voided_at TIMESTAMP NULL
+);
+```
+
+Recommended statuses:
+
+```text
+DRAFT
+RATE_SELECTED
+LABEL_CREATED
+PRINTED
+MANIFESTED
+IN_TRANSIT
+DELIVERED
+VOIDED
+VOID_FAILED
+RETURN_CREATED
+```
+
+Further reading:
+
+- Transaction Report APIs: https://docs.shipping360.pitneybowes.com/openapi/transactionreport
+- Tracking APIs: https://docs.shipping360.pitneybowes.com/openapi/tracking
+
+---
+
+## 17. What Changed Recently
+
+Highlights from the API portal release notes that affect a UPS/USPS integration (portal is at **v1.0.52**, Aug 27 2026):
+
+- **V2 is the default.** Create/Rate/Cancel/Reprint Shipment default to V2 endpoints; V1 lives under "Legacy Endpoints."
+- **Standalone Create Return Label API is deprecated** — use Create Shipment with `isReturn=true`.
+- **Published vs discounted rates:** UPS and FedEx responses include `publishedTotalCarrierCharge`.
+- **Customs on domestic:** V2 Create Shipment accepts customs line items for domestic shipments where a carrier requires them.
+- **EOD Manifest for all carriers** (July 2026); USPS 3877 can be generated by tracking numbers.
+- **`orderNumber` up to 50 characters** across OMS and Shipping APIs (Aug 2026).
+- **USPS 4x3 labels and QR-code labels** for eligible package types.
+- **Whitelisted carrier capabilities:** shipments are validated against the services/parcels/special services enabled for the carrier at your subscription/account level.
+- **Canada infrastructure** with its own base URLs; behavior is consistent across regions.
+- **Official SDKs** available for Go, TypeScript, Java, .NET, and Python.
+- **Location-based resolution:** the `X-PB-LocationId` header drives carrier-account and address resolution; required when origin country differs from your enterprise default.
+- **Sandbox throttling:** ~2 requests/second per developer and ~1000 calls/day.
+
+Full history:
+
+- All Releases: https://docs.shipping360.pitneybowes.com/docs/releases
+- Upcoming Release: https://docs.shipping360.pitneybowes.com/docs/releases/upcoming
+
+---
+
+## 18. Further Reading Links
+
+General:
+
+- Quick Overview: https://docs.shipping360.pitneybowes.com/docs
+- Authentication: https://docs.shipping360.pitneybowes.com/docs/auth/catalog
+- Get Access Token: https://docs.shipping360.pitneybowes.com/openapi/auth/other/getaccesstoken
+- Shipping API: https://docs.shipping360.pitneybowes.com/openapi/shipping
+- Postman Collection: https://docs.shipping360.pitneybowes.com/docs/resources/postman
+- SDKs and Client Libraries: https://docs.shipping360.pitneybowes.com/docs/overview/sdks
+- Error Codes: https://docs.shipping360.pitneybowes.com/docs/support/error-codes
+- Release Notes: https://docs.shipping360.pitneybowes.com/docs/releases
+
+Carriers:
+
+- Carrier Catalog: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/carrier-catalog
+- UPS: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/ups
+- USPS: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/usps
+- FedEx: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/fedex
+
+APIs:
+
+- Address APIs: https://docs.shipping360.pitneybowes.com/openapi/address
+- Rate Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/rateshipment
+- Create Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/createshipmentv2
+- Cancel Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/cancelshipmentbyidv2
+- Reprint Shipment API: https://docs.shipping360.pitneybowes.com/openapi/shipping/shipment/reprintshipmentbyidv2
+- Manifest APIs: https://docs.shipping360.pitneybowes.com/openapi/manifest
+- Tracking APIs: https://docs.shipping360.pitneybowes.com/openapi/tracking
+- Customs Product API: https://docs.shipping360.pitneybowes.com/openapi/customproduct
+- Importer of Record API: https://docs.shipping360.pitneybowes.com/openapi/importerofrecord
+
+---
+
+## Final Notes
+
+For a junior developer, the most important thing is to build the workflow correctly:
+
+```text
+Token → Verify Address → Rate → Create Shipment (label) → Save Response → Print → Track → Cancel/Return/Manifest if needed
+```
+
+Two things this guide corrected that are easy to get wrong:
+1. **Token** comes from `POST /auth/api/v1/token` using **Basic Auth** (Client ID:Secret), not a form `grant_type` — and it lasts **4 hours**.
+2. **Create Shipment V2** uses `parcelType` + `rateShopBy` + `byCarrier`, with **top-level** `labelSize`/`labelType`/`labelFormat`/`contentType` — not nested `labelOptions`, and `ZPL2` (not `ZPL`).
+
+Do not skip saving `shipmentId`, `parcelTrackingNumber`, `correlationId`, `carrier`, `serviceId`, total charge, label content, and the raw API responses. These fields will save a lot of time when debugging production shipping issues.

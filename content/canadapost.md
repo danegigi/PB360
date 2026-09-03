@@ -1,0 +1,115 @@
+# Canada Post (CPC) on Shipping360
+
+> Read [Shipping360 Basics](00-basics.html) first — auth, headers, rating, label creation, cancel, and manifest are identical across carriers. This page covers only what is **Canada Post-specific**. Canadian carriers use the **Canada infrastructure** base URLs (`.../ca/auth`, `.../ca/shipping`).
+
+Canada Post (CPC) is Canada's national postal carrier. Shipping360 supports Canada Post **Parcels services** (not Transaction Mail or Direct Marketing): rate, create label, reprint, void/cancel, tracking, pickup scheduling, and return labels.
+
+---
+
+## Table of Contents
+
+1. [At a Glance](#at-a-glance)
+2. [Geography](#geography)
+3. [Service / Parcel / Special-Service Codes](#service--parcel--special-service-codes)
+4. [Label Formats & Sizes](#label-formats--sizes)
+5. [Connecting a Canada Post Account](#connecting-a-canada-post-account)
+6. [Cross-Border (CA → US)](#cross-border-ca--us)
+7. [Rate Cards / Own-Account Requirements](#rate-cards--own-account-requirements)
+8. [Gotchas](#gotchas)
+9. [Further Reading](#further-reading)
+
+---
+
+## At a Glance
+
+| | |
+|---|---|
+| `carrier` / `carrierID` value | `CPC` |
+| Best for | Canada domestic parcels, CA→US, international |
+| Rate model | **Bring your own Canada Post commercial account** |
+| Account onboarding | Carrier Accounts API (`carrierID: "CPC"`) |
+| Region | **Canada infrastructure** |
+
+---
+
+## Geography
+
+Domestic Canada, Canada→US, and international. CA→US requires cross-border customs options (see below).
+
+---
+
+## Service / Parcel / Special-Service Codes
+
+> **Not published.** The CPC overview page shows "Metadata information not available." Retrieve services, parcel types, and special services at runtime via `GET /getservices` (with `origin`/`destination`), `GET /getparceltypes`, `GET /getspecialservices`. **Do not hard-code** — Canada Post's real services (Regular Parcel, Expedited Parcel, Xpresspost, Priority, Expedited Parcel USA, Xpresspost USA/International, etc.) exist but their PB-mapped codes are not in the docs.
+
+---
+
+## Label Formats & Sizes
+
+CPC-specific formats/sizes are not enumerated on the overview page. Platform-wide the APIs support `PDF`, `PNG`, `GIF`, `ZPL2`; content types `URL` (PDF/GIF) / `BASE64` (ZPL2/PNG/GIF); doc sizes `4x6`, `4x6_75`, `8x11`/`8.5x11`, `4x8`. Confirm the CPC set via the Print API / Carrier Catalog.
+
+---
+
+## Connecting a Canada Post Account
+
+You bring your own Canada Post credentials. Onboard via the Carrier Accounts API:
+
+```text
+POST {caShippingUrl}/api/v1/carrierAccounts
+```
+
+```json
+{
+  "carrierID": "CPC",
+  "carrierAccountType": "Shipping",
+  "provisioningType": "API",
+  "parameters": {
+    "paymentMethod": "CARRIER",
+    "locationID": "YOUR_LOCATION_ID"
+  }
+}
+```
+
+- Prerequisites: a **Payment Method** and a **Location ID**.
+- The response returns `carrierAccountID`, `accountNumber`, `customerNumber`, `shipToBpn`, and an `accountType` (e.g. `ENTERPRISE`).
+- **PITNETWORKS account type:** since **Oct 2025 (v1.0.36)**, a `PITNETWORKS` CPC account type is configurable for API360 clients alongside `ENTERPRISE`.
+- In PitneyShip Pro / Enterprise, the merchant enters their own Canada Post credentials.
+
+Open a Canada Post business account (for contracted rates) via the [Solutions for Small Business](https://www.canadapost-postescanada.ca/cpc/en/small-business.page) program.
+
+---
+
+## Cross-Border (CA → US)
+
+For Canada → US shipments you must supply cross-border options:
+
+- Pass **`declarationId`** as a shipment option **when `X_ACCESS_KEY` (Zonos Access Key) is not configured** for CPC (added v1.0.35, Sep 2025).
+- In the UI, the merchant enters their **Zonos Access Key** in the X-Access Key field for US shipments.
+- Missing both blocks US shipments.
+
+---
+
+## Rate Cards / Own-Account Requirements
+
+The onboarding response echoes the merchant's `customerNumber` / `accountNumber`, so a **Canada Post commercial/business account is required** to get contracted rates. Rate Groups can be managed in the Developer Portal (v1.0.34).
+
+> Whether PB can also provide PB-discounted CPC rates (as it does for USPS/UPS/FedEx single-payer) is not documented — treat as unverified; assume own-account.
+
+---
+
+## Gotchas
+
+- Service/parcel/special codes are **dynamic** — the overview page has no metadata table.
+- CA→US needs `X_ACCESS_KEY` **or** `declarationId`.
+- `carrierAccountId` must match the location resolved by `X-PB-LocationId` (v1.0.48 validation).
+- Canadian carriers run on **separate Canada infrastructure** (`.../ca/shipping`) with a distinct Postman collection.
+- CPC return labels only from **v1.0.45 (Apr 2026)**.
+
+---
+
+## Further Reading
+
+- Canada Post Carrier Guide: https://docs.shipping360.pitneybowes.com/docs/shipping/carriers/overview/canadapost
+- Carrier Accounts API: https://docs.shipping360.pitneybowes.com/openapi/carrieraccounts
+- PB support — set up Canada Post: https://www.pitneybowes.com/ca/en/support/article/000084745/setting-up-a-canada-post-account-in-pitneyship-pro.html
+- Canada Post small business: https://www.canadapost-postescanada.ca/cpc/en/small-business.page
