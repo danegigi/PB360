@@ -450,3 +450,5 @@ Head to a carrier page for its verified codes, account-connection steps, and rat
 - UniUni (last-mile e-commerce)
 
 Every one of them uses the endpoints on this page — only the `carrier`/`service`/`carrierAccountId` values differ.
+
+For bulk labels, label formats/PNG, custom references, pulling individual labels from a batch, and packing slips, see [Batch Shipping & Label Customization](batch-labels.html).
